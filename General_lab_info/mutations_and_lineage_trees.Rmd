@@ -1,0 +1,106 @@
+---
+title: "Mutations and Lineage trees"
+author: "Milca Tarshish"
+date: "12/3/2019"
+output: html_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+#### Loading libraries:
+```{r, message=F}
+library(alakazam)
+library(igraph)
+library(shazam)
+library(crayon)
+```
+
+#### Processing data:  
+Loading data, and subseting one clone out of it:  
+```{r}
+data("ExampleDb")
+#clone_id<-"3128"  # This clone has 100 sequences
+clone_id<-"3110"  # This clone has 26 sequences
+clone_db<-subset(ExampleDb,CLONE==clone_id)
+dim(clone_db)
+```
+Generating a ChangeoClone object for lineage construction:  
+```{r}
+clone <- makeChangeoClone(clone_db, text_fields=c("SAMPLE", "ISOTYPE"), num_fields="DUPCOUNT")
+dim(clone@data)
+```
+
+Building a Phylip lineage tree out of the ChangeoClone object above:  
+```{r}
+dnapars_exec <- "c:\\Users\\milcat\\phylip-3.698\\exe\\dnapars.exe"
+graph <- buildPhylipLineage(clone, dnapars_exec, rm_temp=TRUE)
+```
+Giving sequence numbers to the graph vertexes, and building a lookup table of sequence_id versus sequence_number:  
+(Sequence number are much easier for me to track than a long sequence id).   
+```{r}
+vertex_lookup<-data.frame(seq_num=c(1:(vcount(graph)-1)),
+                          seq_id=as_data_frame(graph,what="edges")$to)
+                     
+vertex_lookup  
+```
+Building a data frame called "graph_df" from the graph and lookup table above:
+```{r}
+graph_df<-data.frame(sequence_num=c(1:(vcount(graph)-1)),
+                     parent_sequence_num=rep("NA",vcount(graph)-1),  # placeholder for this column, putting NA at this stage.
+                     sequence_id=as_data_frame(graph,what="edges")$to, 
+                     parent_sequence_id=as_data_frame(graph,what="edges")$from
+                     )
+graph_df$parent_sequence_num<-vertex_lookup[match(graph_df$parent_sequence_id,vertex_lookup$seq_id),"seq_num"]
+graph_df
+```
+Generating data frame with tableEdges function (found this function later on, so just using it to compare my results):  
+```{r}
+tableEdges(graph, "name")
+```
+
+Merging the 2 data frames:  
+1. graph_df  
+2. data frame of the clone object  
+```{r}
+merge_df<-merge(graph_df,clone@data,by.x="sequence_id", by.y="SEQUENCE_ID",all=TRUE)
+```
+Adding to the merged data frame - the parrent sequence for each sequence
+```{r}
+merge_df$PARENT_SEQUENCE<-merge_df[match(merge_df$parent_sequence_num,merge_df$sequence_num),"SEQUENCE"]
+#replacing missing sequence (where value is na) with germline sequence
+merge_df[c(which(is.na(merge_df[,"SEQUENCE"]))),"SEQUENCE"]<-clone@germline
+#replace mising parent sequences (where value is na) with germline sequence
+merge_df[c(which(is.na(merge_df[,"PARENT_SEQUENCE"]))),"PARENT_SEQUENCE"]<-clone@germline
+```
+plotting the graph:  
+```{r}
+V(graph)$color <- "steelblue"
+V(graph)$color[V(graph)$name == "Germline"] <- "lightgreen"
+V(graph)$color[grepl("Inferred", V(graph)$name)] <- "purple"
+V(graph)$seq_num<-vertex_lookup[match(V(graph)$label,vertex_lookup$seq_id),"seq_num"]
+V(graph)$seq_num[V(graph)$name == "Germline"]<-"Germline"
+E(graph)$label <- ""
+par(mar=c(0, 0, 0, 0) + 0.8)
+plot(graph, layout=layout_as_tree, edge.arrow.mode=0, vertex.frame.color="black",
+     vertex.label.color="black", vertex.size=20, vertex.label=V(graph)$seq_num,
+     main=paste("Lineage tree for clone clone_id",clone_id))
+legend("topleft", c("Germline", "Inferred", "Sample"), 
+       fill=c("lightgreen", "purple", "steelblue"), cex=0.75)
+```
+
+Adding to merge_df - the expected and obserevd mutations:  
+```{r}
+obs_df<-observedMutations(merge_df, sequenceColumn="SEQUENCE",
+                            germlineColumn="PARENT_SEQUENCE",
+                            frequency=TRUE,
+                            nproc=1)
+exp_df<-expectedMutations(merge_df, sequenceColumn="SEQUENCE",
+                            germlineColumn="PARENT_SEQUENCE",
+                            nproc=1)
+obs_df[,c("sequence_num","parent_sequence_num","MU_FREQ_SEQ_R", "MU_FREQ_SEQ_S")]
+exp_df[,c("sequence_num","parent_sequence_num","MU_EXPECTED_SEQ_R", "MU_EXPECTED_SEQ_S")]
+```
+
+

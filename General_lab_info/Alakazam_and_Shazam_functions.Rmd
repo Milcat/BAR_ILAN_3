@@ -1,0 +1,561 @@
+---
+title: "Alakazam and shazam functions"
+author: "Milca Tarshish"
+date: "11/28/2019"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,eval=TRUE)
+```
+
+
+## Installing packages:
+### R packages:
+This should be done only once:
+```{r,eval=FALSE}
+install.packages("alakazam")
+install.packages("shazam")
+install.packages("Rphylip")
+```
+### External tool - PHYLIP (none R) package: 
+Also need to install PHYLIP package (which is none R) through following link: 
+<http://evolution.genetics.washington.edu/phylip/getme-new1.html>
+
+
+## Loading libraries:
+```{r,  eval=T,results="hide",message=F}
+library(shazam)
+library(alakazam)
+library(Rphylip)
+library(igraph)
+library(dplyr)
+```
+
+## Example data:
+Loading example data, which is a data.frame with the following Change-O style columns:  
+**SEQUENCE_ID:** Sequence identifier   
+**SEQUENCE_IMGT:** IMGT-gapped observed sequence.   
+**GERMLINE_IMGT_D_MASK:** IMGT-gapped germline sequence with N, P and D regions masked.   
+**V_CALL:** V region allele assignments.   
+**V_CALL_GENOTYPED:** TIgGER corrected V region allele assignment.   
+**D_CALL:** D region allele assignments.   
+**J_CALL:** J region allele assignments.   
+**JUNCTION:** Junction region sequence.   
+**JUNCTION_LENGTH:** Length of the junction region in nucleotides.   
+**NP1_LENGTH:** Combined length of the N and P regions proximal to the V region.   
+**NP2_LENGTH:** Combined length of the N and P regions proximal to the J region.   
+**SAMPLE:** Sample identifier. Time in relation to vaccination.  
+**ISOTYPE:** Isotype assignment.   
+**DUPCOUNT:** Copy count (number of duplicates) of the sequence.   
+**CLONE:** Change-O assignment clonal group identifier.   
+```{r,  eval=T,message=T}
+data(ExampleDb, package="alakazam")
+dim(ExampleDb)
+str(ExampleDb)
+summary(ExampleDb)
+# sybsetting the database for further functions usage:  
+db <- subset(ExampleDb, ISOTYPE %in% c("IgA", "IgG") & SAMPLE == "+7d" &
+                 CLONE %in% c("3100", "3141", "3184"))
+dim(db)
+```
+
+## Usefull data types:  
+### IUPAC translation lists:  
+#### IUPAC_DNA:   
+DNA nucleotides translation:  
+```{r}
+IUPAC_DNA
+```
+
+#### IUPAC_AA:  
+Amino Acids translation:  
+```{r}
+IUPAC_AA
+```
+
+
+### Colors:  
+#### DNA_COLORS:   
+DNA character colors c("A", "C", "G", "T").
+```{r}
+barplot(c(1:length(names(DNA_COLORS))),col=DNA_COLORS,names.arg = names(DNA_COLORS))
+```
+
+#### IG_COLORS:   
+Ig isotype colors c("IgA", "IgD", "IgE", "IgG", "IgM", "IgK", "IgL").   
+```{r}
+barplot(c(1:length(names(IG_COLORS))),col=IG_COLORS,names.arg = names(IG_COLORS))
+```
+ 
+#### TR_COLORS:  
+TCR chain colors c("TRA", "TRB", "TRD", "TRG").  
+```{r}
+barplot(c(1:length(names(TR_COLORS))),col=TR_COLORS,names.arg = names(TR_COLORS))
+```
+
+### Regions:   
+#### IMGT_REGIONS:  
+A list with regions named one of c("FWR1", "CDR1", "FWR2", "CDR2", "FWR3") with values containing a numeric vector of length two defining the c(start, end) positions of the named region.  
+```{r}
+IMGT_REGIONS
+```
+
+### Data types:
+#### ChangeoClone:  
+Defines a common data structure for perform lineage recontruction from Change-O data. Has foillowing slots:  
+**data: ** data.frame containing sequences and annotations. Contains the columns SEQUENCE_ID and SEQUENCE, as well as any additional sequence-specific annotation columns.  
+**clone: ** string defining the clone identifier.  
+**germline: ** string containing the germline sequence for the clone.  
+**v_gene: **string defining the V segment gene call.  
+**j_gene: **string defining the J segment gene call.  
+**junc_len: **numeric junction length (nucleotide count).  
+
+#### Baseline:  
+An object which has the following slots:  
+**description:** character providing general information regarding the sequences, selection analysis and/or object.  
+**db:** data.frame containing annotation information about the sequences and selection results.   
+**regionDefinition:** RegionDefinition object defining the regions and boundaries of the Ig sequences.  
+**testStatistic:** character indicating the statistical framework used to test for selection. For example, "local" or "focused".  
+**regions:** character vector defining the regions the BASELINe analysis was carried out on. For "CDR" and "FWR" or "CDR1", "CDR2",   "CDR3", etc.  
+**numbOfSeqs:** matrix of dimensions r x c containing the number of sequences or PDFs in each region, where:  
+r = number of rows = number of groups or sequences.   
+c = number of columns = number of regions.  
+**binomK:** matrix of dimensions r x c containing the number of successes in the binomial trials in each region, where:  
+r = number of rows = number of groups or sequences.  
+c = number of columns = number of regions.  
+**binomN:** matrix of dimensions r x c containing the total number of trials in the binomial in each region, where:  
+r = number of rows = number of groups or sequences.  
+c = number of columns = number of regions.  
+**binomP:** matrix of dimensions r x c containing the probability of success in one binomial trial in each region, where:  
+r = number of rows = number of groups or sequences.  
+c = number of columns = number of regions.  
+**pdfs:** list of matrices containing PDFs with one item for each defined region (e.g. "CDR" and "FWR"). Matrices have dimensions r x c dementions, where:  
+r = number of rows = number of sequences or groups.   
+c = number of columns = length of the PDF (default 4001).  
+**stats:**  
+data.frame of BASELINe statistics, including: mean selection strength (mean Sigma), 95% confidence intervals, and p-values with positive signs for the presence of positive selection and/or p-values with negative signs for the presence of negative selection  
+
+## Important functions:   
+### Personal Functions:  
+#### show_seq_diff:  
+Visualizing differences between 2 aligned sequences:
+```{r}
+show_seq_diff <- function (seq1=NULL, seq2=NULL, diff_col="red") {
+        library(crayon)
+        diff_count<-0
+        seq1_split<-strsplit(seq1,split="")
+        seq2_split<-strsplit(seq2,split="")
+        seq1_split<-seq1_split[[1]]
+        seq2_split<-seq2_split[[1]]
+        for (i in c(1:length(seq1_split))) {
+           if (seq1_split[i] == seq2_split[i]) {
+               cat("\n",black(seq1_split[i]),black(seq2_split[i])) 
+           }
+           else {
+               # adding an arrow as well as changing the color, since in R markdown - colors are not seen           
+               cat("\n",red(bold(seq1_split[i])),red(bold(seq2_split[i])),"<-")
+               if((seq1_split[i]!="N") & (seq2_split[i]!="N")) {
+                   diff_count<-diff_count+1  
+               }           
+           }
+        }
+        cat("\n Total differences counted: ", diff_count)
+}
+```
+exmaple:   
+```{r}
+seq1<-"aaaccc"
+seq2<-"agacct"
+show_seq_diff(seq1,seq2)
+```
+
+### General functions:   
+#### isValidAASeq:  
+Checks that a set of sequences are valid non-ambiguous amino acid sequences. A sequence is considered valid if it contains only characters in the the non-ambiguous IUPAC character set or any characters in c("X", ".", "-", "*"). Input to this function are sequences of Amino Acids, output form this function are TRUE/FALSE logical values.  
+```{r}
+seq <- c("CARD", "CARJ", "10") 
+isValidAASeq(seq)
+```
+
+#### translateDNA:
+Translates nucleotide sequences to amino acid sequences. Input to this function are DNA sequences of nucleotides. output from this function are Amino Acid translations.  
+```{r}
+translateDNA(c("ACTGACTCGA","AAAGGGCCCTTTAAC"))
+```
+#### padSeqEnds:  
+Takes a vector of DNA sequences, as character strings, and appends the ends of each sequence with an appropriate number of "N" characters to create a sequence vector with uniform lengths. Input and output from/to this function are DNA sequences.  
+```{r}
+seq <- c("CCCCTGGG", "ACCCTG", "CCCC")
+padSeqEnds(seq,len=10)
+```
+
+#### maskSeqGaps:  
+Substitutes gap characters, c("-", "."), with "N" in a vector of DNA sequences. Input and output from/to this function are DNA sequences.  
+```{r}
+maskSeqGaps(c("ATG-C", "CC..C"))
+```
+
+#### maskSeqEnds:  
+Takes a vector of DNA sequences, as character strings, and replaces the leading and trailing characters with "N" characters to create a sequence vector with uniformly masked outer sequence segments. Input and output from/to this function are DNA sequences.  
+```{r}
+seq <- c("CCCCTGGG", "NAACTGGN", "NNNCTGNN")
+maskSeqEnds(seq)
+```
+
+#### extractVRegion:    
+Extracts the framework and complementarity determining regions of the V segment for IMGT-gapped immunoglobulin (Ig) nucleotide sequences according to the IMGT numbering scheme.  
+The input to this function are character vectors of IMGT-gapped nucleotide sequences.  
+The output from this function is a matrix: number of rows corresponds to number of sequences, and number of columns corresponds to regions input parameter to function (default is all regions).  
+```{r}
+two_seqs<-db$SEQUENCE_IMGT[10:11]  
+extractVRegion(two_seqs)
+```
+
+#### getDNAMatrix:  
+Build a DNA distance matrix: it returns a Hamming distance matrix for IUPAC ambiguous DNA characters with modifications for gap, c("-", "."), and missing, c("?"), character values. 
+This function outputs a matrix.  
+```{r}
+getDNAMatrix(gap=0)
+```
+
+#### seqDist:  
+Calculate distance between two sequences: Gets as input 2 sequences, and a distance matrix, and outputs a numerical value of distance between the 2 sequences.  
+```{r}
+DNA_matrix<-getDNAMatrix(gap=0)
+seqDist(two_seqs[1],two_seqs[2],dist_mat=getDNAMatrix())
+```
+
+#### seqEqual:  
+checks if two DNA sequences are identical. Gets as input 2 sequences, and outputs a TRUE/FALSE logical value.  
+```{r}
+seqEqual("ATGGC", "ATGGN", ignore="N")
+```
+
+#### pairwiseDist:  
+calculates all pairwise distance between a set of sequences. Gets as input a vector of character DNA sequences. Returns as output a matrics with all distamces between each 2 sequences.  
+```{r}
+seq<-c(A="ATGGC", B="ATGGG", C="ATGGG", D="AT--C")
+pairwiseDist(seq,dist_mat=getDNAMatrix(gap=0))
+```
+
+#### nonsquareDist:  
+calculates all pairwise distance between a set of sequences and a subset of it (similar to pairwiseEqual, but returns a none squere matrix). Input to this functionis a set of sequences. Output from this function is alogical matrix.  
+```{r}
+nonsquareDist(seq, indx=c(1,3),dist_mat=getDNAMatrix(gap=0))
+```
+
+#### pairwiseEqual:  
+Determined pairwise equivalence between pairs in a set of sequences, excluding ambiguous positions (Ns and gaps).  
+Input to this functionis a set of sequences. Output from this function is alogical matrix.  
+```{r}
+seq <- c(A="ATGGC", B="ATGGG", C="ATGGG", D="AT--C", E="NTGGG")
+d <- pairwiseEqual(seq)
+rownames(d) <- colnames(d) <- seq
+d
+```
+
+#### checkColumns:  
+Check data.frame for valid columns and issue message if invalid.   Input to this function is a data frame. output from this function is a logical value + related string.  
+```{r}
+df1 <- data.frame(A=1:3, B=4:6, C=rep(NA, 3))
+df1
+checkColumns(df1, c("A", "D"), logic="all")
+```
+
+#### cpuCount:  
+Determines the number of CPU cores available. This function has no input, and output is a number.  
+```{r}
+cpuCount()
+```
+
+#### translateStrings:  
+modifies a character vector by substituting one or more strings with a replacement string. Input to this function is a vector of character strings. Output from this function are the modified strings.  
+```{r}
+strings <- LETTERS[1:5]
+strings
+translation <- list("1-3"=c("A","B","C"), "4-5"=c("D","E"))
+translateStrings(strings, translation)
+
+#ABBREV_AA is the amino acid abreviation stranslation:
+aa <- c("Ala", "Ile", "Trp")
+translateStrings(aa, ABBREV_AA)
+
+```
+
+#### writeChangeoDb:  
+Write a Change-O tab-delimited database file.    
+```{r}
+writeChangeoDb(ExampleDb,"Ex.tsv")
+```
+#### readChangeoDb: 
+Read a Change-O tab-delimited database file.    
+```{r}
+tt<-readChangeoDb("Ex.tsv")
+```
+
+#### countGenes:   
+Determines the count and relative abundance of V(D)J alleles, genes or families within groups.  Input to this function is a Change-O style columns data frame, and output is a summary data frame.  
+```{r}
+gene <- countGenes(ExampleDb, gene="V_CALL", groups="SAMPLE", mode="gene")
+head(gene)
+```
+
+#### countClones:  
+Determines the number of sequences and total copy number of clonal groups. Input to this function is a data frame with Change-O style columns containing clonal assignments. Output from this functions is a data frame summarizing clone counts and frequencies with columns.  
+```{r}
+clones1 <- countClones(ExampleDb, groups=c("SAMPLE", "ISOTYPE"), copy="DUPCOUNT")
+clones1
+```
+
+#### collapseDuplicates:   
+Identifies duplicate DNA sequences, allowing for ambiguous characters, removes the duplicate entries, and combines any associated annotations. Input to this function is a data frame, and output from this function is a modified data frame with duplicate sequences removed and annotation fields collapsed.  
+```{r}
+db2 <- data.frame(SEQUENCE_ID=LETTERS[1:4],
+         SEQUENCE_IMGT=c("CCCCTGGG", "CCCCTGGN", "NAACTGGN", "NNNCTGNN"),
+         TYPE=c("IgM", "IgG", "IgG", "IgA"),
+         SAMPLE=c("S1", "S1", "S2", "S2"),
+         COUNT=1:4,
+         stringsAsFactors=FALSE)
+# Annotations are not parsed if neither text_fields nor num_fields is specified. The retained sequence annotations will be random.
+collapseDuplicates(db2, verbose=TRUE)
+```
+
+#### collapseClones:
+Constructs effective clonal sequences for all clones. 
+This function provides one strategy for generating an effective sequences for each clone. It reduces the input database to one row per clone and appends CLONAL_SEQUENCE and CLONAL_GERMLINE columns which contain the consensus sequences for each clone. 
+The output of this function is a data frame class.
+```{r, eval=T,message=F}
+clones <- collapseClones(db, method="thresholdedFreq", minimumFrequency=0.6,
+                         includeAmbiguous=FALSE, breakTiesStochastic=FALSE)
+dim(clones)
+```
+
+#### observedMutations: 
+Calculates obserevd number of mutations. 
+It receives a data.frame as input, and outputs a data.frame with additional columns at the end that count  
+the number (or frequency) of mutations per type - R/S and per region - CDR/FWR:  
+```{r, eval=T,message=F}
+db_obs <- observedMutations(db, sequenceColumn="SEQUENCE_IMGT",
+                            germlineColumn="GERMLINE_IMGT_D_MASK",
+                            frequency=TRUE,
+                            nproc=1)
+dim(db_obs)
+```
+
+#### expectedMutations: 
+Calculates expected mutation frequencies for each sequence in the input data.frame.  
+It receives a data.frame as input, and outputs a data.frame with additional columns at the end that count  
+the expected number of mutations per type - R/S and per region - CDR/FWR:  
+```{r, eval = T, message=F}
+db_exp <- expectedMutations(db,
+                            sequenceColumn="SEQUENCE_IMGT",
+                            germlineColumn="GERMLINE_IMGT_D_MASK",
+                            regionDefinition=IMGT_V,
+                            nproc=1)
+dim(db_exp)
+```
+
+### BASELINe related functions: 
+#### calcBaseline:
+Calculate the BASELINe PDF.   
+Gets as input a (Change-O) data.frame and calculates a posterior PDF for the sequences in the input data.frame   
+It is recomended to run this function on effective sequences in clones, meaning after running the function collapseClones.  
+The output of this function is a "baseline" class object.
+
+```{r, eval=T,message=F}
+baseline <- calcBaseline(clones, 
+                         sequenceColumn="CLONAL_SEQUENCE",
+                         germlineColumn="CLONAL_GERMLINE", 
+                         testStatistic="focused",
+                         regionDefinition=IMGT_V,
+                         targetingModel=HH_S5F,
+                         nproc=1)
+names(baseline@db)
+```
+
+#### groupBaseline 
+Group BASELINe PDFs - convolves groups of BASELINe posterior probability density functions (PDFs) to get combined PDFs for each group. The input to this function is a baseline object and so is its output.   
+```{r, eval=T,message=F}
+grouped1 <- groupBaseline(baseline, groupBy=c("SAMPLE","ISOTYPE"))
+```
+
+
+#### plotBaselineSummary 
+Plots BASELINe summary statistics of the slection analysis results. 
+plots the mean and confidence interval of selection scores for the given groups.
+The input to this function is a baseline object, and the output is a ggplot object. 
+```{r, eval=T,message=F}
+isotype_colors <- c("IgM"="darkorchid", "IgD"="firebrick", 
+                    "IgG"="seagreen", "IgA"="steelblue")
+plotBaselineSummary(grouped1, "SAMPLE", "ISOTYPE", 
+                    groupColors=isotype_colors)
+
+# Facet by group instead of region
+plotBaselineSummary(grouped1, "SAMPLE", "ISOTYPE", facetBy="group")
+```
+
+#### summarizeBaseline 
+Calculates BASELINe summary statistics (like mean selection strength, 95% confidence interval, p-value, etc)
+The input to this function is a baseline object, and the output is either a data.frame or a baseline object.
+```{r, eval=T,message=F}
+summarizeBaseline(baseline, returnType = c("df"),
+  nproc = 1)
+```
+
+#### plotBaselineDensity 
+Plots BASELINe PDF. 
+plots the full Baseline PDF of selection scores for the given groups.  
+The input to this function is a baseline object, and output is ggplot object.  
+```{r, eval=T,message=F}
+plotBaselineDensity(grouped1, "SAMPLE", "ISOTYPE", colorValues=isotype_colors, 
+                    colorElement="group", sigmaLimits=c(-1, 1))
+
+```
+
+#### testBaseline: 
+Perfomrs a 2 sided test of BASELINe posterior PDFs.  
+The input to this function is a baseline object, and the output is a data.frame.  
+```{r, eval = T}
+testBaseline(grouped1, groupBy="ISOTYPE")
+```
+
+#### editBaseline: 
+Edits the BASELINe object.
+The input to this function is a baseline object, and so is the output.  
+```{r, eval = T}
+baseline <- editBaseline(baseline, field="description",
+                         value="+7d IgG")
+```
+
+### Lineage tree functions 
+#### makeChangeoClone: 
+Generates a ChangeoClone object for lineage construction 
+The input to this function is a (Change-O) data.frame object, and the output is a ChangeoClone object.  
+
+```{r, eval=T}
+data(ExampleDb)
+sub_db <- subset(ExampleDb, CLONE == "3138")
+clone <- makeChangeoClone(sub_db, text_fields=c("SAMPLE", "ISOTYPE"), num_fields="DUPCOUNT")
+clone@data[, c("SAMPLE", "ISOTYPE", "DUPCOUNT")]
+```
+
+#### buildPhylipLineage: 
+
+Infers an Ig lineage using PHYLIP, using maximum parsimony.  
+This function gets as input a ChangeoClone object, and outputs an igraph graph object.  
+It uses the PHYLIP (none R package).  
+```{r, eval=T}
+dnapars_exec <- "c:\\Users\\milcat\\phylip-3.698\\exe\\dnapars.exe"
+graph <- buildPhylipLineage(clone, dnapars_exec, rm_temp=TRUE)
+data.frame(clone_id=graph$clone,
+           junction_length=graph$junc_len,
+           v_gene=graph$v_gene,
+           j_gene=graph$j_gene)
+data.frame(sequence_id=V(graph)$name, 
+           c_call=V(graph)$ISOTYPE,
+           duplicate_count=V(graph)$DUPCOUNT)
+plot(graph)
+# for a nice plot:
+V(graph)$color <- "steelblue"
+V(graph)$color[V(graph)$name == "Germline"] <- "black"
+V(graph)$color[grepl("Inferred", V(graph)$name)] <- "white"
+V(graph)$label <- V(graph)$ISOTYPE
+E(graph)$label <- ""
+par(mar=c(0, 0, 0, 0) + 0.1)
+plot(graph, layout=layout_as_tree, edge.arrow.mode=0, vertex.frame.color="black",
+     vertex.label.color="black", vertex.size=40)
+legend("topleft", c("Germline", "Inferred", "Sample"), 
+       fill=c("black", "white", "steelblue"), cex=0.75)
+
+```
+
+#### graphToPhylo:  
+Convert a tree in igraph graph format to ape phylo format.  
+Input to this function is igraph - graph object. Output from this function is a phylo object. 
+```{r}
+# convert to phylo
+phylo <- graphToPhylo(graph)
+#plot using ape
+plot(phylo, show.node.label=TRUE)
+```
+
+#### write.tree:   
+write tree file in Newick format.    
+Input to this function is phylo object (or multiphylo). 
+Output from this function is writing to a file.  
+```{r}
+# for writing directly to a file:  
+ape::write.tree(phylo, file="example.tree")
+#example_tree<-ape::write.tree(phylo)
+#print(example_tree)
+```
+#### read.tree:  
+This function reads a file which contains one or several trees in parenthetic format known as the Newick or New Hampshire format.  
+The input to this function is a file in Newick format, and output is a phylo object.  
+```{r}
+#read in tree as phylo object
+phylo_r <- ape::read.tree("example.tree")
+```
+
+#### phyloToGraph:  
+Convert a tree in ape phylo format to igraph graph format.  
+Input to this function is a phylo object. Output from this function is a graph object.  
+```{r}
+graph_r <- phyloToGraph(phylo_r, germline="Germline")
+plot(graph_r,layout=layout_as_tree)
+```
+
+#### plotSubtree:  
+Plots distributions of normalized subtree statistics for a set of lineage trees, broken down by annotation value. 
+Input to this function are graphs, and outputs are plots.  
+```{r}
+graphs <- ExampleTrees[1-10]
+plotSubtrees(graphs, "SAMPLE", "out", style="v")
+plotSubtrees(graphs, "ISOTYPE", "depth", style="b")
+```
+#### summarizeSubtrees:   
+Calculates summary statistics for each node of a tree. Includes both node properties and subtree properties.  
+Input to this function is an igraph object, and output is a data frame.  
+```{r}
+summarizeSubtrees(graph)
+```
+#### tableEdges :  
+Creates a parent-child data frame from a graph.  
+Input to this function is an igraph object, and output is a data frame.  
+```{r}
+tableEdges(graph, "name", indirect=TRUE)
+```
+
+#### permuteLabels:  
+permutes the node annotations of a lineage tree.  Input to this function is an igrpah object, and output is a modified igraph object with vertex annotations permutated. 
+```{r}
+# compare following table to the one generated above:  
+tableEdges(permuteLabels(graph,"name"),"name",indirect=TRUE)
+```
+
+#### getPathLengths:  
+Calculates the unweighted (number of steps) and weighted (distance) path lengths from the root of a lineage tree.  
+```{r}
+getPathLengths(graph, root="Germline")
+```
+
+### Mutation models functions:  
+#### createSubstitutionMatrix:  
+Builds a 5-mer nucleotide substitution model by counting the number of substitution mutations occuring in the center position for all 5-mer motifs.  
+Input to this function is a data frame with sequences.  
+Output of this function is a matrix 4x1024:  Each column is a 5-mer (one of 1024 options), and each row - is the normalized substitution rate for each nucleotide (one row per each A/C/G/T nucleotides) at the center nucleotide.  
+```{r}
+dbA <- subset(ExampleDb, ISOTYPE == "IgA" & SAMPLE == "-1h")
+sub_modelA <- createSubstitutionMatrix(dbA, model="S", multipleMutation="independent",
+                                     returnModel="5mer")
+sub_modelA[,1000:1005]
+```
+#### createMutabilityMatrix:  
+Builds a 5-mer nucleotide mutability model by counting the number of mutations occuring in the center position for all 5-mer motifs.  
+Input to this function is a data frame with sequences, and a matrix of 5-mer substitution model.  
+Output from this function is a numerical vector of length 1024, with mutability rates for each 5-mer.    
+```{r}
+mut_modelA <- createMutabilityMatrix(dbA, sub_modelA, model="S")
+mut_modelA[1000:1005]
+```
+
