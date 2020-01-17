@@ -101,92 +101,144 @@ dim(clones_db)
 #find 10 most largest clones:
 clones_factor<-as.factor(clones_db$CLONE)
 clones_factor_table<-table(clones_factor)
+clones_to_build_trees<-as.numeric(names(clones_factor_table))
 head(sort(clones_factor_table,decreasing = TRUE),n=20)
 ```
-
-### making a ChangeoClone object from data above (one clone at a time)
-
-```{r}
-# first creating a changeoclone object for one specific clone:
-cur_clone_num<-4969
-# working: 2955, 4070, 5026, 7921, 399, 2490, 344, 337, 646, 7918, 259, 346
-# not working due to more than one SEQUENCE_IMGT_D_MASK per clone: 5412, 3295, 345, 7935, 338, 339, 4464, 4052
-# working with 2 sequences in clone: 273, 586, 1390, 2003
-# not working with 2 sequences in a clone (since 2 sequences were colappsed while running makeChangeoClone): 2007,
-cur_clone_db<-subset(clones_db,CLONE==cur_clone_num)
-cur_clone_obj<-makeChangeoClone(cur_clone_db)
-cur_clone_obj@data$V_CALL<-cur_clone_obj@v_gene
-cur_clone_obj@data$J_CALL<-cur_clone_obj@j_gene
-cur_clone_obj@data$CLONE<-cur_clone_obj@clone
-cur_clone_obj@data$GERMLINE_IMGT_D_MASK<-cur_clone_obj@germline
-cur_clone_obj@data$JUNCTION_LENGTH<-cur_clone_obj@junc_len
-# marking whether the cur_clone_obj data is of at least 2 lines:
-# If only one line, it means that even though the original clone size was of more than 1 line 
-# - theall the lines were the same, and all collapsed to one line while building a clone object.
-# So in this case - no point of building a lineage tree with one line in a clone.
-cur_clone_size<-dim(cur_clone_obj@data)[1]
+### defining some functions that will run in a loop later on all clones in clones_to_build_trees:
+#### function make_chaneoClone_cur_clone: creating a changeoclone object for one specific clone:
+```{r func_make_chaneoClone_cur_clone}
+make_chaneoClone_cur_clone <- function(cur_clone_num,all_clones_db) {
+  cur_clone_db<-subset(all_clones_db,CLONE==cur_clone_num)
+  #print(cur_clone_db)
+  cur_clone_obj<-makeChangeoClone(cur_clone_db)
+  cur_clone_obj@data$V_CALL<-cur_clone_obj@v_gene
+  cur_clone_obj@data$J_CALL<-cur_clone_obj@j_gene
+  cur_clone_obj@data$CLONE<-cur_clone_obj@clone
+  cur_clone_obj@data$GERMLINE_IMGT_D_MASK<-cur_clone_obj@germline
+  cur_clone_obj@data$JUNCTION_LENGTH<-cur_clone_obj@junc_len
+  # marking whether the cur_clone_obj data is of at least 2 lines:
+  # If only one line, it means that even though the original clone size was of more than 1 line 
+  # - then all the lines were the same, and they all collapsed to one line while building a clone object.
+  # So in this case - no point of building a lineage tree with one line in a clone.
+  cur_clone_size<-dim(cur_clone_obj@data)[1]
+  setClass("make_chaneoClone_cur_clone_class", slots=list(ChangeoClone_obj="ChangeoClone", size="numeric"))
+  ret_class<-new("make_chaneoClone_cur_clone_class",ChangeoClone_obj=cur_clone_obj,size=cur_clone_size)
+  return(ret_class)
+}
 ```
 
-### making a graph out of ChangeoClone object:
-```{r}
-dnapars_exec <- "c:\\Users\\milcat\\phylip-3.698\\exe\\dnapars.exe"
-cur_clone_graph<-buildPhylipLineage(cur_clone_obj,dnapars_exec,rm_temp = TRUE)  
+#### function make_graph_cur_clone: making a graph out of ChangeoClone object:
+```{r func_make_graph_cur_clone}
+make_graph_cur_clone<-function(cur_clone_obj,dnapars_exec) {
+  # The below line is in order to avoid warning message
+  cur_clone_obj@data$SEQUENCE_ID<-as.character(cur_clone_obj@data$SEQUENCE_ID) 
+  cur_clone_graph<-buildPhylipLineage(cur_clone_obj,dnapars_exec,rm_temp = TRUE)  
+  # in case that the cur_clone_num does not include at least 2 unique sequences - the cur_clone_graph will be "NULL".
+  #note: "N" instead of A/C/G/T does not make a sequence unique.
+  return(cur_clone_graph)
+}
 ```
 
-### generating a data frame from graph object, and mering it with clone database (only for objects with more than one line):
-```{r}
-cur_clone_graph_df<-summarizeSubtrees(cur_clone_graph)
-cur_clone_merged_df<-merge(x=cur_clone_obj@data,y=cur_clone_graph_df,by.x="SEQUENCE_ID",by.y="NAME",all=T)
+#### function make_graph_df: Generating a data frame from graph object, and mering it with clone database (only for objects with more than one line):
+```{r func_make_graph_df}
+make_graph_df <- function(cur_clone_graph,cur_clone_obj) {
+  # extracting the cur_clone_num from the inputs to function:
+  cur_clone_num<-cur_clone_obj@clone
+  # adding the "sequence" field - for getting the inferred sequences from the graph:
+  cur_clone_graph_df<-summarizeSubtrees(cur_clone_graph,fields="sequence")
+  cur_clone_merged_df<-merge(x=cur_clone_obj@data,y=cur_clone_graph_df,by.x="SEQUENCE_ID",by.y="NAME",all=T)
+  # uniquifying some values in merged data frame, and filling some missing values:
+  #1. Replacing inferred sequences names with a unique name (using the clone number). 
+  # Doing so for both SEQUENCE_ID and PARENT and graph vertices
+  cur_clone_merged_df$PARENT<-gsub(pattern="Inferred",x=cur_clone_merged_df$PARENT,
+                                   replacement=paste("Inferred_",cur_clone_num,"_",sep=""))
+  cur_clone_merged_df$SEQUENCE_ID<-gsub(pattern="Inferred",x=cur_clone_merged_df$SEQUENCE_ID,
+                                        replacement=paste("Inferred_",cur_clone_num,"_",sep=""))
+  V(cur_clone_graph)$label<-gsub(pattern="Inferred",x=V(cur_clone_graph)$label,
+                                 replacement=paste("Inferred_",cur_clone_num,"_",sep=""))
+  
+  #2. Replacing Germline sequence name with a unique name (using the clone number). 
+  # Doing so for both SEQUENCE_ID and PARENT and graph vertices:
+  cur_clone_merged_df$PARENT<-gsub(pattern="Germline",x=cur_clone_merged_df$PARENT,
+                                   replacement=paste("Germline_",cur_clone_num,sep=""))
+  cur_clone_merged_df$SEQUENCE_ID<-gsub(pattern="Germline",x=cur_clone_merged_df$SEQUENCE_ID,
+                                        replacement=paste("Germline_",cur_clone_num,sep=""))
+  V(cur_clone_graph)$label<-gsub(pattern="Germline",x=V(cur_clone_graph)$label,
+                                 replacement= paste("Germline_",cur_clone_num,sep=""))
+  
+  #3. Now need to fill in missing values for germline sequence and inffered sequences:
+  cur_clone_merged_df$CLONE<-cur_clone_num
+  cur_clone_merged_df$V_CALL<-cur_clone_obj@v_gene
+  cur_clone_merged_df$J_CALL<-cur_clone_obj@j_gene
+  cur_clone_merged_df$CLONE<-cur_clone_num
+  cur_clone_merged_df$V_CALL<-cur_clone_obj@v_gene
+  cur_clone_merged_df$JUNCTION_LENGTH<-cur_clone_obj@junc_len
+  cur_clone_merged_df$GERMLINE_IMGT_D_MASK<-cur_clone_obj@germline
+  
+  #4.Renaming SEQUENCE_ID column to ORIG_SEQUENCE_ID, and setting a new SEQUENCE_ID column with following format:  
+  #<CLONE_NUM>_<SEQUENCE_SERIAL_NUM>  
+  #Except for Germline and Inferred names which will remain as is.   
+  cur_clone_merged_df$ORIG_SEQUENCE_ID<-cur_clone_merged_df$SEQUENCE_ID
+  cur_clone_merged_df$SEQUENCE_ID <- paste(cur_clone_num,"_",c(1:length(cur_clone_merged_df$ORIG_SEQUENCE_ID)),sep="")
+  cur_clone_merged_df<-mutate(cur_clone_merged_df,SEQUENCE_ID=ifelse(grepl("Germline|Inferred",ORIG_SEQUENCE_ID),
+                                                                     ORIG_SEQUENCE_ID,SEQUENCE_ID))
+
+  #5. Doing the same for PARENT column: 
+  # Renaming PARENT column to ORIG_PARENT, and setting a new PARENT column with following format:  
+  # <CLONE_NUM>_<SEQUENCE_SERIAL_NUM>  
+  #Except for Germline and Inferred names which will remain as is.
+  cur_clone_merged_df$ORIG_PARENT<-cur_clone_merged_df$PARENT
+  cur_clone_merged_df$PARENT<-cur_clone_merged_df[match(cur_clone_merged_df$ORIG_PARENT,                                                                                         cur_clone_merged_df$ORIG_SEQUENCE_ID),"SEQUENCE_ID"]
+ 
+  #6. Removing the SEQUENCE column, as it does not include sequences of germline and inferred.
+  #Renaming the "sequence" column to "SEQUENCE"
+  cur_clone_merged_df<-subset(cur_clone_merged_df,select=c(-SEQUENCE))
+  cur_clone_merged_df<-rename(cur_clone_merged_df,SEQUENCE=sequence)
+
+  #7. Adding the parent sequence as a new column:
+  cur_clone_merged_df$PARENT_SEQUENCE<-cur_clone_merged_df[match(cur_clone_merged_df$PARENT,
+                                                                 cur_clone_merged_df$SEQUENCE_ID),"SEQUENCE"]         
+  # filling the parent sequece of the Germline sequence to be its own sequence (=GERMLINE_IMGT_D_MASK):
+  cur_clone_merged_df<-mutate(cur_clone_merged_df,PARENT_SEQUENCE=ifelse(is.na(PARENT_SEQUENCE),
+                                                                         GERMLINE_IMGT_D_MASK,PARENT_SEQUENCE))
+  return(cur_clone_merged_df)
+}
 ```
-### uniquifying some values in merged data frame, and filling some missing values:
 
-Replacing inferred sequences names with a unique name (using the clone number). Doing so for both SEQUENCE_ID and PARENT and graph vertices
-```{r}
-cur_clone_merged_df$PARENT<-gsub(pattern = "Inferred",x=cur_clone_merged_df$PARENT,replacement =        paste("Inferred_",cur_clone_num,"_",sep=""))
-cur_clone_merged_df$SEQUENCE_ID<-gsub(pattern = "Inferred",x=cur_clone_merged_df$SEQUENCE_ID,replacement = paste("Inferred_",cur_clone_num,"_",sep=""))
-V(cur_clone_graph)$label<-gsub(pattern = "Inferred",x=V(cur_clone_graph)$label,replacement = paste("Inferred_",cur_clone_num,"_",sep=""))
-```
-
-Replacing Germline sequence name with a unique name (using the clone number). Doing so for both SEQUENCE_ID and PARENT and graph vertices:
-```{r}
-cur_clone_merged_df$PARENT<-gsub(pattern = "Germline",x=cur_clone_merged_df$PARENT,replacement = paste("Germline_",cur_clone_num,sep=""))
-cur_clone_merged_df$SEQUENCE_ID<-gsub(pattern = "Germline",x=cur_clone_merged_df$SEQUENCE_ID,replacement = paste("Germline_",cur_clone_num,sep=""))
-V(cur_clone_graph)$label<-gsub(pattern = "Germline",x=V(cur_clone_graph)$label,replacement = paste("Germline_",cur_clone_num,sep=""))
-```
-
-Now need to fill in missing values for germline sequence and inffered sequences:
-
-```{r}
-cur_clone_merged_df$CLONE<-cur_clone_num
-cur_clone_merged_df$V_CALL<-cur_clone_obj@v_gene
-cur_clone_merged_df$J_CALL<-cur_clone_obj@j_gene
-cur_clone_merged_df$CLONE<-cur_clone_num
-cur_clone_merged_df$V_CALL<-cur_clone_obj@v_gene
-cur_clone_merged_df$JUNCTION_LENGTH<-cur_clone_obj@junc_len
-cur_clone_merged_df$GERMLINE_IMGT_D_MASK<-cur_clone_obj@germline
-```
-
-Renaming SEQUENCE_ID column to ORIG_SEQUENCE_ID, and setting a new SEQUENCE_ID column with following format:  
-<CLONE_NUM>_<SEQUENCE_SERIAL_NUM>  
-Except for Germline and Inferred names which will remain as is.   
-```{r}
-cur_clone_merged_df$ORIG_SEQUENCE_ID<-cur_clone_merged_df$SEQUENCE_ID
-cur_clone_merged_df$SEQUENCE_ID <- paste(cur_clone_num,"_",c(1:length(cur_clone_merged_df$ORIG_SEQUENCE_ID)),sep="")
-cur_clone_merged_df<-mutate(cur_clone_merged_df,SEQUENCE_ID=ifelse(grepl("Germline|Inferred",ORIG_SEQUENCE_ID),ORIG_SEQUENCE_ID,SEQUENCE_ID))
-```
-
-Doing the same for PARENT column: 
-Renaming PARENT column to ORIG_PARENT, and setting a new PARENT column with following format:  
-<CLONE_NUM>_<SEQUENCE_SERIAL_NUM>  
-Except for Germline and Inferred names which will remain as is.
-```{r}
-cur_clone_merged_df$ORIG_PARENT<-cur_clone_merged_df$PARENT
-cur_clone_merged_df$PARENT<-cur_clone_merged_df[match(cur_clone_merged_df$ORIG_PARENT,cur_clone_merged_df$ORIG_SEQUENCE_ID),"SEQUENCE_ID"]
+#### looping on some clones to run functions above:
+```{r loop_on_clones}
+#clones_to_build_trees<-c(2955,2003,4969)
+first_clone<-TRUE
+loop_start_time<-Sys.time()
+#suppressWarnings("binding factor and character vector, coercing into character vector")
+for (clone_index in clones_to_build_trees) {
+  dnapars_exec<-"c:\\Users\\milcat\\phylip-3.698\\exe\\dnapars.exe"
+  #print(clone_index)
+  ret_class<-make_chaneoClone_cur_clone(cur_clone_num = clone_index,all_clones_db = clones_db)
+  cur_clone_obj<-ret_class@ChangeoClone_obj
+  cur_clone_size<-ret_class@size
+  cur_clone_graph<-make_graph_cur_clone(cur_clone_obj,dnapars_exec)
+  #print(cur_clone_obj)
+  #print("clone ",clone_index, " size: ",cur_clone_size)
+  if (!is.null(cur_clone_graph)) {
+    cur_clone_merged_df<-make_graph_df(cur_clone_graph,cur_clone_obj)
+    if(first_clone) {
+      first_clone<-FALSE
+      all_clones_merged_df<-cur_clone_merged_df
+    } #endif ifrst_clone
+    else {
+      all_clones_merged_df<-rbind(all_clones_merged_df,cur_clone_merged_df)
+    }
+  } # endif
+} # endfor
+loop_end_time<-Sys.time()
+print(loop_start_time)
+print(loop_end_time)
 ```
 
 
 For viewing a tree plot of the clone:
-```{r fig.width = 15, fig.height=10}
+```{r fig.width = 15, fig.height=10, eval=F}
 V(cur_clone_graph)$color <- "lightblue"
 #making the graph vertices show the (simple) SEQUENCE_ID
 V(cur_clone_graph)$seq_num<-cur_clone_merged_df[match(V(cur_clone_graph)$label,cur_clone_merged_df$ORIG_SEQUENCE_ID),"SEQUENCE_ID"]   
