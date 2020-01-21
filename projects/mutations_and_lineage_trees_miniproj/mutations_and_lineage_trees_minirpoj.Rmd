@@ -105,7 +105,8 @@ clones_to_build_trees<-as.numeric(names(clones_factor_table))
 head(sort(clones_factor_table,decreasing = TRUE),n=20)
 ```
 ### defining some functions that will run in a loop later on all clones in clones_to_build_trees:
-#### function make_chaneoClone_cur_clone: creating a changeoclone object for one specific clone:
+#### function make_chaneoClone_cur_clone:  
+Creating a changeoclone object for one specific clone:  
 ```{r func_make_chaneoClone_cur_clone}
 make_chaneoClone_cur_clone <- function(cur_clone_num,all_clones_db) {
   cur_clone_db<-subset(all_clones_db,CLONE==cur_clone_num)
@@ -127,7 +128,8 @@ make_chaneoClone_cur_clone <- function(cur_clone_num,all_clones_db) {
 }
 ```
 
-#### function make_graph_cur_clone: making a graph out of ChangeoClone object:
+#### function make_graph_cur_clone: 
+Making a graph out of ChangeoClone object:  
 ```{r func_make_graph_cur_clone}
 make_graph_cur_clone<-function(cur_clone_obj,dnapars_exec) {
   # The below line is in order to avoid warning message
@@ -140,7 +142,8 @@ make_graph_cur_clone<-function(cur_clone_obj,dnapars_exec) {
 }
 ```
 
-#### function make_graph_df: Generating a data frame from graph object, and mering it with clone database (only for objects with more than one line):
+#### function make_graph_df:  
+Generating a data frame from graph object, and mering it with clone database (only for objects with more than one line):  
 ```{r func_make_graph_df}
 make_graph_df <- function(cur_clone_graph,cur_clone_obj) {
   # extracting the cur_clone_num from the inputs to function:
@@ -211,7 +214,8 @@ make_graph_df <- function(cur_clone_graph,cur_clone_obj) {
 }
 ```
 
-#### function draw_clone_lineage_tree: For viewing a tree plot of the clone:
+#### function draw_clone_lineage_tree:  
+For viewing a tree plot of a specific clone:  
 ```{r func_draw_clone_lineage_tree, fig.width = 15, fig.height=10}
 draw_clone_lineage_tree<-function(cur_clone,clones_db) {
   dnapars_exec<-"c:\\Users\\milcat\\phylip-3.698\\exe\\dnapars.exe"
@@ -223,7 +227,8 @@ draw_clone_lineage_tree<-function(cur_clone,clones_db) {
   cur_clone_graph<-make_graph_cur_clone(cur_clone_obj,dnapars_exec)
   #print(cur_clone_graph)
   #print(all_clones_merged_df[,"CLONE"==cur_clone])
-  V(cur_clone_graph)$color <- "lightblue"
+  V(cur_clone_graph)$color <- ifelse(grepl("Germline",V(cur_clone_graph)$label),"lightgreen",
+                              ifelse(grepl("Inferred",V(cur_clone_graph)$label),"lightpink","lightblue"))
   #making the graph vertices show the (simple) SEQUENCE_ID
   cur_clone_only_df<-filter(all_clones_merged_df,CLONE==cur_clone)
   V(cur_clone_graph)$seq_num<-cur_clone_only_df[match(V(cur_clone_graph)$label,cur_clone_only_df$ORIG_SEQUENCE_ID),
@@ -233,8 +238,97 @@ draw_clone_lineage_tree<-function(cur_clone,clones_db) {
   plot(cur_clone_graph, layout=layout_as_tree, edge.arrow.mode=0, vertex.frame.color="black", vertex.label.cex=0.8,
      vertex.label.color="black", vertex.size=18, vertex.label=V(cur_clone_graph)$seq_num, 
      main=paste("Lineage tree for clone ",cur_clone))
-  #cur_clone_db[,c("ORIG_SEQUENCE_ID","SEQUENCE_ID","ORIG_PARENT","PARENT")]
+  legend("topleft", c("Germline", "Inferred", "Sample"), 
+       fill=c("lightgreen", "lightpink", "lightblue"), cex=0.75)
 }
+```
+
+#### function make_region:  
+Getting as input a JuNCTION_LENGTH, SEQUENCE_IMGT,  
+and outputing a RegionDefinition object that includes following regions:  
+FWR1: Bases	1 to 78     (based on IMGT_V_BY_REGIONS definitions)  
+CDR1: Bases	79 to 114   (based on IMGT_V_BY_REGIONS definitions) 
+FWR2: Bases	115 to 165  (based on IMGT_V_BY_REGIONS definitions)  
+CDR2: Bases	166 to 195  (based on IMGT_V_BY_REGIONS definitions)  
+FWR3: Bases	196 to 312  (based on IMGT_V_BY_REGIONS definitions)
+CDR3: Bases	313 to (313+JUNCTION_LENGTH-6) - since junction sequnece includes (on the left) the last codon from FWR3,  
+and (on the right) the first codon from FWR4. 
+FWR4: Bases	(313+JUNCTION_LENGTH-6+1) to SEQUENCE_LENGTH.  
+
+```{r func_make_region}
+make_region <- function(JUNCTION_LENGTH,SEQUENCE_IMGT) {
+  # First need to extract sequence length from sequence:
+  SEQ_LEN<-nchar(SEQUENCE_IMGT)
+  name<-"IMGT_FULL_BY_REGIONS"
+  description<-"IMGT numbering scheme defining the V(D)J segment by individual CDR and FWR regions, including CDR3 and FWR4"
+  boundaries[1:312]<-factor(IMGT_V_BY_REGIONS@boundaries  ,levels=c(levels(IMGT_V_BY_REGIONS@boundaries),"CDR3","FWR4"))
+  boundaries[313:(313+as.integer(JUNCTION_LENGTH)-6-1)]<-factor("CDR3")
+  boundaries[(313+as.integer(JUNCTION_LENGTH)-6):SEQ_LEN]<-factor("FWR4")
+  seqLength<-SEQ_LEN
+  regions<-c("CDR1","CDR2","CDR3","FWR1","FWR2","FWR3","FWR4")
+  labels<-c("CDR1_R","CDR1_S","CDR2_R","CDR2_S","CDR3_R","CDR3_S","FWR1_R","FWR1_S","FWR2_R","FWR2_S","FWR3_R","FWR3_S","FWR4_R","FWR4_S")
+  citation<-"http://www.imgt.org/IMGTScientificChart/Nomenclature/IMGT-FRCDRdefinition.html"
+  ret_class<-new("RegionDefinition",name=name,description=description,boundaries=boundaries,
+                                    seqLength=seqLength,regions=regions,labels=labels,
+                                    citation=citation)
+  return(ret_class)
+}
+```
+
+#### function get_clone_region:  
+This function gets as input a clone number and a data frame with sequences and their clone number,  
+And returns the RegionDefinition object of type IMGT_FULL_BY_REGIONS for this specific clone.  
+The function gets as input also the column name of the clone and sequence in the data frame.
+Note that the region definition is same for all sequences in clone - so doing it based on first sequence in clone.  
+```{r func_get_clone_region}
+get_clone_region <- function(clone_num,db,seq_col="SEQUENCE",junc_len_col="JUNCTION_LENGTH",clone_col="CLONE") {
+  # getting one of the sequences of the specific clone: 
+  #clone_col1<-as.symbol(clone_col)
+  clone_db<-filter(db,(!!as.name(clone_col))==clone_num)
+  #clone_db<-filter(db,CLONE==clone_num)
+  seq<-clone_db[1,seq_col]
+  junc_len<-clone_db[1,junc_len_col]
+  reg<-make_region(JUNCTION_LENGTH = junc_len, SEQUENCE_IMGT = seq)
+  return(reg)
+}
+```
+
+#### function observedMutations_L:  
+Very similar to observedMutations function, except that it runs with regard to parent sequence in lineage tree,  
+Instead of with regard to GERMLINE_IMGT sequence. so on each sequence in the clone - the observed number of   
+mutations is computed with regard to its parent sequence (and not with regard to the germline sequence).  
+Note: The regionDefinition - is different for each clone.
+```{r func_observedMutations_L}
+observedMutations_L <- function(db,sequenceColumn = "SEQUENCE_IMGT", germlineColumn = "PARENT_SEQUENCE", clone_col="CLONE",
+                                mutationDefinition = NULL, ambiguousMode = c("eitherOr", "and"), 
+                                frequency = FALSE, combine = FALSE, nproc = 1) {
+  # Since each clone needs a different regionDefinition - then this function will loop on all clones in db,
+  # and for each clone will run the function observedMutations with its own regionDefinition.
+  # For all clones - the germlineColumn will point to the parent sequence column.
+  # before looping: setting a list of all clones in db:  
+  clones_in_db<-unique(db[,c(clone_col)])
+  first_clone<-1
+  for (cur_clone in clones_in_db) {
+    # filtering out of db - only lines for cur_clone:
+    cur_clone_db<-filter(db,(!!as.name(clone_col))==cur_clone)
+    # setting the regionDefinition for the specific clone:
+    cur_clone_reg<-make_region(JUNCTION_LENGTH = cur_clone_db[1,"JUNCTION_LENGTH"],
+                               SEQUENCE_IMGT =   cur_clone_db[1,"SEQUENCE"])
+    clone_observeedMutations_db<-observedMutations(db=cur_clone_db,sequenceColumn = sequenceColumn,
+                                                   germlineColumn =germlineColumn,regionDefinition=cur_clone_reg,
+                                                   mutationDefinition=mutationDefinition,ambiguousMode=ambiguousMode,
+                                                   frequency=frequency,combine=combine) 
+    # binding current clone_observeedMutations_db to one big data frame:
+    if (first_clone==1) {
+      observeedMutations_db<-clone_observeedMutations_db
+      first_clone<-0
+    }
+    else {
+      observeedMutations_db<-rbind(observeedMutations_db,clone_observeedMutations_db)
+    }
+  } # end of for loop
+  return(observeedMutations_db)
+} # end of function
 ```
 
 #### looping on some clones to run functions above:
@@ -276,5 +370,4 @@ print(unique(all_clones_merged_df$CLONE))
 #print(loop_start_time)
 #print(loop_end_time)
 ```
-
 
