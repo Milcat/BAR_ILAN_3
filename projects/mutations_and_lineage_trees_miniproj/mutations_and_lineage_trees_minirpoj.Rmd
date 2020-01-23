@@ -57,26 +57,26 @@ Need to run the following python short script:
 The above takes the file SC10_rename_p1_p2_germ-pass.tab w/o CLONE column, and adds to it the CLONE column.  
 The output file is named CI10_rename_p1_p2_germ-pass_clone-pass.tab, which is the same content as SC10_rename_p1_p2_germ-pass.tab, but with an additional CLONE column. 
 
-### Loading data from HCV_B database:  
-```{r}
-file_pointer<-"C:\\Bar Ilan 3 data - not backed up\\HCV_B\\CI10_rename_p1_p2_germ-pass_clone-pass.tab"
-clones_db<-read.csv(file_pointer, header=TRUE,sep='\t')
-dim(clones_db)
-clones_factor<-as.factor(clones_db$CLONE)
-clones_factor_table<-table(clones_factor)
-```
-### cleaning some lines from database:
-Removing lines which belong to clones of size 1 (meaning only one line for this clone):
-```{r}
-clones_db<-filter(clones_db,clones_factor_table[CLONE]!=1)
-dim(clones_db)
+
+### Functions for cleaning some lines from database and getting relevant clones list:  
+
+#### Function clean_one_read_clones: 
+Removes lines that belong to clones with one read ony:  
+```{r func_clean_one_read_clones} 
+clean_one_read_clones<-function(db,clone_col="CLONE") {
+  clones_factor<-as.factor(clones_db[,c(clone_col)])
+  clones_factor_table<-table(clones_factor)
+  clones_db<-filter(db,clones_factor_table[CLONE]!=1)
+  return(clones_db)
+}
 ```
 
-Removing lines which belong to clones with 2 (or more) different values for GERMLINE_IMGT_D_MASK:
-```{r}
-#The bellow function checkes if a specific clone in a specific database - has more than one GERMLINE_IMGT_D_MASK value:
-# It will return TRUE if the clone is a proper clone (meaning all its lines in database have same GERMLINE_IMGT_VALUE),
-# and FALSE otherwise.
+
+#### Function proper_clone:
+Checks if a specific clone in database - has more than one GERMLINE_IMGT_D_MASK value:
+It will return TRUE if the clone is a proper clone (meaning all its lines in database have same GERMLINE_IMGT_VALUE),
+and FALSE otherwise.
+```{r func_proper_clone}
 proper_clone <- function(db,clone_num) {
         clone_db<-filter(db,CLONE==clone_num)
         # since the field GERMLINE_IMGT_D_MASK is of factor type of very large size
@@ -89,28 +89,52 @@ proper_clone <- function(db,clone_num) {
                 return(F)
         }
 }
-
-# filtering out lines of database that have improper clones above:
-clones_list<-unique(clones_db$CLONE)
-for (i in clones_list) {
-        if (proper_clone(clones_db,i)==F) {
-                clones_db<-filter(clones_db,CLONE!=i)
-        }
-}
-dim(clones_db)
-#find 10 most largest clones:
-clones_factor<-as.factor(clones_db$CLONE)
-clones_factor_table<-table(clones_factor)
-clones_to_build_trees<-as.numeric(names(clones_factor_table))
-head(sort(clones_factor_table,decreasing = TRUE),n=20)
 ```
-### defining some functions that will run in a loop later on all clones in clones_to_build_trees:
-#### function make_chaneoClone_cur_clone:  
+
+
+#### Function cleanup_clones:
+filtering out lines of database that have improper clones, which either:  
+ - clones of size 1.  
+ - belong to clones with 2 (or more) different values for GERMLINE_IMGT_D_MASK:  
+```{r func_cleanup_clones}
+cleanup_clones<-function(db,clone_col="CLONE") {
+  clones_db<-clean_one_read_clones(db,clone_col)
+  clones_list<-unique(clones_db[,c(clone_col)])
+  for (i in clones_list) {
+          if (proper_clone(clones_db,i)==F) {
+                  clones_db<-filter(clones_db,!!as.name(clone_col)!=i)
+          }
+  }
+  return(clones_db)
+}
+```
+
+#### Function make_clones_list:  
+This function gets a db as input and generates a list of clones to run on  
+The list will include each clone number only once.  
+```{r func_make_clones_list}
+make_clones_list<- function(db, clone_col="CLONE") {
+  clones_list<-unique(db[,c(clone_col)])
+  return(clones_list)
+}
+```
+
+#### Function make_clones_table:  
+This function gets a db as input and generates a table of clone number and their frequencey in the db.  
+```{r func_make_clones_table}
+make_clones_table<- function(db, clone_col="CLONE") {
+  clones_factor<-as.factor(db[,c(clone_col)])
+  clones_table<-table(clones_factor)
+  return(clones_table)
+}
+```
+
+### Functions that will run in a loop later on all clones in db to build a new db with lineage tree info:
+#### Function make_chaneoClone_cur_clone:  
 Creating a changeoclone object for one specific clone:  
 ```{r func_make_chaneoClone_cur_clone}
-make_chaneoClone_cur_clone <- function(cur_clone_num,all_clones_db) {
-  cur_clone_db<-subset(all_clones_db,CLONE==cur_clone_num)
-  #print(cur_clone_db)
+make_chaneoClone_cur_clone <- function(db,cur_clone_num) {
+  cur_clone_db<-subset(db,CLONE==cur_clone_num)
   cur_clone_obj<-makeChangeoClone(cur_clone_db)
   cur_clone_obj@data$V_CALL<-cur_clone_obj@v_gene
   cur_clone_obj@data$J_CALL<-cur_clone_obj@j_gene
@@ -148,13 +172,15 @@ Generating a data frame from graph object, and mering it with clone database (on
 make_graph_df <- function(cur_clone_graph,cur_clone_obj) {
   # extracting the cur_clone_num from the inputs to function:
   cur_clone_num<-cur_clone_obj@clone
-  # adding the "sequence" field - for getting the inferred sequences from the graph:
+  # generating a data frame from the clone igraph object (- for getting the inferred sequences from the graph,
+  # and the parent information):
   cur_clone_graph_df<-summarizeSubtrees(cur_clone_graph,fields="sequence")
+  # merging the db from clone object and from graph:
   cur_clone_merged_df<-merge(x=cur_clone_obj@data,y=cur_clone_graph_df,by.x="SEQUENCE_ID",by.y="NAME",all=T)
   # Renaming SEQUENCE_ID column to ORIG_SEQUENCE_ID, and renaming PARENT to ORIG_PARENT:
   cur_clone_merged_df$ORIG_SEQUENCE_ID<-cur_clone_merged_df$SEQUENCE_ID
   cur_clone_merged_df$ORIG_PARENT<-cur_clone_merged_df$PARENT
-  
+ 
   # uniquifying some values in merged data frame, and filling some missing values:
   
   #1. Replacing inferred sequences names with a unique name (using the clone number). 
@@ -187,17 +213,17 @@ make_graph_df <- function(cur_clone_graph,cur_clone_obj) {
   #4. setting a new SEQUENCE_ID column with following format:  
   #<CLONE_NUM>_<SEQUENCE_SERIAL_NUM>  
   #Except for Germline and Inferred names which will remain as is.   
-  #move up: cur_clone_merged_df$ORIG_SEQUENCE_ID<-cur_clone_merged_df$SEQUENCE_ID
-  cur_clone_merged_df$SEQUENCE_ID <- paste(cur_clone_num,"_",c(1:length(cur_clone_merged_df$ORIG_SEQUENCE_ID)),sep="")
-  cur_clone_merged_df<-mutate(cur_clone_merged_df,SEQUENCE_ID=ifelse(grepl("Germline|Inferred",ORIG_SEQUENCE_ID),
-                                                      paste(cur_clone_num,"_",ORIG_SEQUENCE_ID,sep=""),SEQUENCE_ID))
+  cur_clone_merged_df$SEQUENCE_ID <-  
+                              paste(cur_clone_num,"_",c(1:length(cur_clone_merged_df$ORIG_SEQUENCE_ID)),sep="")
+  cur_clone_merged_df<-mutate(cur_clone_merged_df,
+                              SEQUENCE_ID=ifelse(grepl("Germline|Inferred",ORIG_SEQUENCE_ID),
+                                                 paste(cur_clone_num,"_",ORIG_SEQUENCE_ID,sep=""),SEQUENCE_ID))
 
   #5. Doing the same for PARENT column: 
-  # Renaming PARENT column to ORIG_PARENT, and setting a new PARENT column with following format:  
+  # setting a new PARENT column with following format:  
   # <CLONE_NUM>_<SEQUENCE_SERIAL_NUM>  
   #Except for Germline and Inferred names which will remain as is.
-  # move up: cur_clone_merged_df$ORIG_PARENT<-cur_clone_merged_df$PARENT
-  cur_clone_merged_df$PARENT<-cur_clone_merged_df[match(cur_clone_merged_df$ORIG_PARENT,                                                                                         cur_clone_merged_df$ORIG_SEQUENCE_ID),"SEQUENCE_ID"]
+  cur_clone_merged_df$PARENT<-cur_clone_merged_df[match(cur_clone_merged_df$ORIG_PARENT,                                                                    cur_clone_merged_df$ORIG_SEQUENCE_ID),"SEQUENCE_ID"]
  
   #6. Removing the SEQUENCE column, as it does not include sequences of germline and inferred.
   #Renaming the "sequence" column to "SEQUENCE"
@@ -217,27 +243,23 @@ make_graph_df <- function(cur_clone_graph,cur_clone_obj) {
 #### function draw_clone_lineage_tree:  
 For viewing a tree plot of a specific clone:  
 ```{r func_draw_clone_lineage_tree, fig.width = 15, fig.height=10}
-draw_clone_lineage_tree<-function(cur_clone,clones_db) {
+draw_clone_lineage_tree<-function(db,cur_clone) {
   dnapars_exec<-"c:\\Users\\milcat\\phylip-3.698\\exe\\dnapars.exe"
-  ret_class<-make_chaneoClone_cur_clone(cur_clone_num = cur_clone,all_clones_db = clones_db)
+  ret_class<-make_chaneoClone_cur_clone(db = db,cur_clone_num = cur_clone)
   cur_clone_obj<-ret_class@ChangeoClone_obj
-  
-  #print(cur_clone_obj@data)
-  
   cur_clone_graph<-make_graph_cur_clone(cur_clone_obj,dnapars_exec)
-  #print(cur_clone_graph)
-  #print(all_clones_merged_df[,"CLONE"==cur_clone])
   V(cur_clone_graph)$color <- ifelse(grepl("Germline",V(cur_clone_graph)$label),"lightgreen",
                               ifelse(grepl("Inferred",V(cur_clone_graph)$label),"lightpink","lightblue"))
-  #making the graph vertices show the (simple) SEQUENCE_ID
+  #making the graph vertices show the simple SEQUENCE_ID
   cur_clone_only_df<-filter(all_clones_merged_df,CLONE==cur_clone)
-  V(cur_clone_graph)$seq_num<-cur_clone_only_df[match(V(cur_clone_graph)$label,cur_clone_only_df$ORIG_SEQUENCE_ID),
-                                                   "SEQUENCE_ID"]   
+  V(cur_clone_graph)$seq_num<-cur_clone_only_df[match(V(cur_clone_graph)$label,
+                                                      cur_clone_only_df$ORIG_SEQUENCE_ID),"SEQUENCE_ID"]   
   E(cur_clone_graph)$label <- ""
   par(mar=c(0, 0, 0, 0) + 1)
-  plot(cur_clone_graph, layout=layout_as_tree, edge.arrow.mode=0, vertex.frame.color="black", vertex.label.cex=0.8,
-     vertex.label.color="black", vertex.size=18, vertex.label=V(cur_clone_graph)$seq_num, 
-     main=paste("Lineage tree for clone ",cur_clone))
+  plot(cur_clone_graph, layout=layout_as_tree, edge.arrow.mode=0, 
+       vertex.frame.color="black", vertex.label.cex=0.8,
+       vertex.label.color="black", vertex.size=18, vertex.label=V(cur_clone_graph)$seq_num, 
+       main=paste("Lineage tree for clone ",cur_clone))
   legend("topleft", c("Germline", "Inferred", "Sample"), 
        fill=c("lightgreen", "lightpink", "lightblue"), cex=0.75)
 }
@@ -245,14 +267,14 @@ draw_clone_lineage_tree<-function(cur_clone,clones_db) {
 
 #### function make_region:  
 Getting as input a JuNCTION_LENGTH, SEQUENCE_IMGT,  
-and outputing a RegionDefinition object that includes following regions:  
+and outputing a RegionDefinition object that includes following regions:   
 FWR1: Bases	1 to 78     (based on IMGT_V_BY_REGIONS definitions)  
 CDR1: Bases	79 to 114   (based on IMGT_V_BY_REGIONS definitions) 
 FWR2: Bases	115 to 165  (based on IMGT_V_BY_REGIONS definitions)  
 CDR2: Bases	166 to 195  (based on IMGT_V_BY_REGIONS definitions)  
 FWR3: Bases	196 to 312  (based on IMGT_V_BY_REGIONS definitions)
 CDR3: Bases	313 to (313+JUNCTION_LENGTH-6) - since junction sequnece includes (on the left) the last codon from FWR3,  
-and (on the right) the first codon from FWR4. 
+and (on the right) the first codon from FWR4.  
 FWR4: Bases	(313+JUNCTION_LENGTH-6+1) to SEQUENCE_LENGTH.  
 
 ```{r func_make_region}
@@ -281,9 +303,9 @@ And returns the RegionDefinition object of type IMGT_FULL_BY_REGIONS for this sp
 The function gets as input also the column name of the clone and sequence in the data frame.
 Note that the region definition is same for all sequences in clone - so doing it based on first sequence in clone.  
 ```{r func_get_clone_region}
-get_clone_region <- function(clone_num,db,seq_col="SEQUENCE",junc_len_col="JUNCTION_LENGTH",clone_col="CLONE") {
+get_clone_region <- function(db,clone_num,seq_col="SEQUENCE",junc_len_col="JUNCTION_LENGTH",clone_col="CLONE") {
   # getting one of the sequences of the specific clone: 
-  #clone_col1<-as.symbol(clone_col)
+  # clone_col1<-as.symbol(clone_col)
   clone_db<-filter(db,(!!as.name(clone_col))==clone_num)
   #clone_db<-filter(db,CLONE==clone_num)
   seq<-clone_db[1,seq_col]
@@ -299,8 +321,9 @@ Instead of with regard to GERMLINE_IMGT sequence. so on each sequence in the clo
 mutations is computed with regard to its parent sequence (and not with regard to the germline sequence).  
 Note: The regionDefinition - is different for each clone.
 ```{r func_observedMutations_L}
-observedMutations_L <- function(db,sequenceColumn = "SEQUENCE_IMGT", germlineColumn = "PARENT_SEQUENCE", clone_col="CLONE",
-                                mutationDefinition = NULL, ambiguousMode = c("eitherOr", "and"), 
+observedMutations_L <- function(db,sequenceColumn = "SEQUENCE_IMGT", germlineColumn = "PARENT_SEQUENCE",
+                                clone_col="CLONE", mutationDefinition = NULL, 
+                                ambiguousMode = c("eitherOr", "and"), 
                                 frequency = FALSE, combine = FALSE, nproc = 1) {
   # Since each clone needs a different regionDefinition - then this function will loop on all clones in db,
   # and for each clone will run the function observedMutations with its own regionDefinition.
@@ -315,9 +338,10 @@ observedMutations_L <- function(db,sequenceColumn = "SEQUENCE_IMGT", germlineCol
     cur_clone_reg<-make_region(JUNCTION_LENGTH = cur_clone_db[1,"JUNCTION_LENGTH"],
                                SEQUENCE_IMGT =   cur_clone_db[1,"SEQUENCE"])
     clone_observeedMutations_db<-observedMutations(db=cur_clone_db,sequenceColumn = sequenceColumn,
-                                                   germlineColumn =germlineColumn,regionDefinition=cur_clone_reg,
-                                                   mutationDefinition=mutationDefinition,ambiguousMode=ambiguousMode,
-                                                   frequency=frequency,combine=combine) 
+                                                   germlineColumn=germlineColumn,
+                                                   regionDefinition=cur_clone_reg,                                                                                mutationDefinition=mutationDefinition,
+                                                   ambiguousMode=ambiguousMode,
+                                                   frequency=frequency,combine=combine,nproc=nproc) 
     # binding current clone_observeedMutations_db to one big data frame:
     if (first_clone==1) {
       observeedMutations_db<-clone_observeedMutations_db
@@ -331,43 +355,93 @@ observedMutations_L <- function(db,sequenceColumn = "SEQUENCE_IMGT", germlineCol
 } # end of function
 ```
 
-#### looping on some clones to run functions above:
-```{r loop_on_clones}
+#### function expectedMutations_L:  
+Very similar to expectedMutations function, except that it runs with regard to parent sequence in lineage tree,
+Instead of with regard to GERMLINE_IMGT sequence. so on each sequence in the clone - the observed number of   
+mutations is computed with regard to its parent sequence (and not with regard to the germline sequence).  
+Note: The regionDefinition - is different for each clone.
+```{r func_expectedMutations_L}
+expectedMutations_L <- function(db,sequenceColumn = "SEQUENCE_IMGT", germlineColumn = "PARENT_SEQUENCE",
+                                clone_col="CLONE",targetingModel = HH_S5F, mutationDefinition = NULL, 
+                                nproc = 1) {
+  # Since each clone needs a different regionDefinition - then this function will loop on all clones in db,
+  # and for each clone will run the function expectedMutations with its own regionDefinition.
+  # For all clones - the germlineColumn will point to the parent sequence column.
+  # before looping: setting a list of all clones in db:  
+  clones_in_db<-unique(db[,c(clone_col)])
+  first_clone<-1
+  for (cur_clone in clones_in_db) {
+    # filtering out of db - only lines for cur_clone:
+    cur_clone_db<-filter(db,(!!as.name(clone_col))==cur_clone)
+    # setting the regionDefinition for the specific clone:
+    cur_clone_reg<-make_region(JUNCTION_LENGTH = cur_clone_db[1,"JUNCTION_LENGTH"],
+                               SEQUENCE_IMGT =   cur_clone_db[1,"SEQUENCE"])
+    clone_expectedMutations_db<-expectedMutations(db=cur_clone_db,sequenceColumn = sequenceColumn,
+                                                   germlineColumn =germlineColumn,
+                                                   targetingModel=targetingModel,
+                                                   regionDefinition=cur_clone_reg,
+                                                   mutationDefinition=mutationDefinition,
+                                                   nproc=nproc) 
+    # binding current clone_observeedMutations_db to one big data frame:
+    if (first_clone==1) {
+      expectedMutations_db<-clone_expectedMutations_db
+      first_clone<-0
+    }
+    else {
+      expectedMutations_db<-rbind(expectedMutations_db,clone_expectedMutations_db)
+    }
+  } # end of for loop
+  return(expectedMutations_db)
+} # end of function
+```
+
+### Using all functions above on database:  
+```{r use_func_on_db}
+# 1. Loading data from HCV_B database:  
+file_pointer<-"C:\\Bar Ilan 3 data - not backed up\\HCV_B\\CI10_rename_p1_p2_germ-pass_clone-pass.tab"
+clones_db<-read.csv(file_pointer, header=TRUE,sep='\t')
+dim(clones_db)
+
+# 2. Cleanup data (clean clones with one read only, and clean clones that have 2 or more 
+#    different valuesof GERMLINE_IMGT_D_MASK )
+clones_db<-cleanup_clones(clones_db,clone_col="CLONE")
+
+# 3. create a list of clones to loop on:  
+clones_to_build_trees<-make_clones_list(clones_db)
 #clones_to_build_trees<-c(4070,12,259,11)
+
+# 4. Loop on all clones in db above:
 first_clone<-TRUE
 #loop_start_time<-Sys.time()
+dnapars_exec<-"c:\\Users\\milcat\\phylip-3.698\\exe\\dnapars.exe"
 for (clone_index in clones_to_build_trees) {
-  dnapars_exec<-"c:\\Users\\milcat\\phylip-3.698\\exe\\dnapars.exe"
-  #print(clone_index)
-  ret_class<-make_chaneoClone_cur_clone(cur_clone_num = clone_index,all_clones_db = clones_db)
+  ret_class<-make_chaneoClone_cur_clone(db = clones_db,cur_clone_num = clone_index)
   cur_clone_obj<-ret_class@ChangeoClone_obj
   cur_clone_size<-ret_class@size
   # in case  the clone size is of 1 row - skip to next clone, as no lineage tree is relevant here:
   # This also suppresses following warning:
   # "Warning in buildPhylipLineage(cur_clone_obj, dnapars_exec, rm_temp = TRUE): 
   # Clone 7781 was skipped as it does not   contain at least 2 unique sequences"
-  if(nrow(cur_clone_obj@data)==1) {
+  if(cur_clone_size==1) {
     next
   }
   cur_clone_graph<-make_graph_cur_clone(cur_clone_obj,dnapars_exec)
-  #print(cur_clone_obj)
-  #print("clone ",clone_index, " size: ",cur_clone_size)
-  if (!is.null(cur_clone_graph)) {
+  if (!is.null(cur_clone_graph)) { 
     cur_clone_merged_df<-make_graph_df(cur_clone_graph,cur_clone_obj)
     if(first_clone) {
       first_clone<-FALSE
       all_clones_merged_df<-cur_clone_merged_df
-    } #endif ifrst_clone
+    } #endif first_clone
     else {
       all_clones_merged_df<-rbind(all_clones_merged_df,cur_clone_merged_df)
     }
   } # endif
 } # endfor
-#print all clones in all_clones_mereged_df:
-print("clones in lineage trees database: ")
-print(unique(all_clones_merged_df$CLONE))
+
 #loop_end_time<-Sys.time()
 #print(loop_start_time)
 #print(loop_end_time)
+all_clones_merged_df<-observedMutations_L(all_clones_merged_df,sequenceColumn = "SEQUENCE")
+all_clones_merged_df<-expectedMutations_L(all_clones_merged_df,sequenceColumn = "SEQUENCE")
 ```
 
