@@ -20,42 +20,12 @@ library(dplyr)
 
 ## Processing data: 
 
-### Adding GERMLINE_IMGT_D_MASK column to database
-In case the change-o database does not have a "GERMLINE_IMGT_D_MASK" column, then this can be calculated by running following python script:  
+### Adding GERMLINE_IMGT_D_MASK, GERMLINE_IMGT and CLONE columns to database
+In case the change-o database does not have columns "GERMLINE_IMGT_D_MASK", "GERMLINE_IMGT" and "CLONE", then this can be calculated by running following python script:  
 
-*import sys*  
-*import os*  
-*sys.path.append('C:\\Users\\milcat\\AppData\\Local\\Programs\\Python\\Python36-32\\Scripts')*  
-*import CreateGermlines*   
-*Germ_files_list=[\\  
-                  "C:\\Bar Ilan 3 data - not backed up\\Change-O examples\\Changeo_Example\\IMGT_Human_IGHV.fasta",\\   
-                  "C:\\Bar Ilan 3 data - not backed up\\Change-O examples\\Changeo_Example\\IMGT_Human_IGHD.fasta",\\    
-                  "C:\\Bar Ilan 3 data - not backed up\\Change-O examples\\Changeo_Example\\IMGT_Human_IGHJ.fasta"]*      
-*dbfile="C:\\Bar Ilan 3 data - not backed up\\HCV_B\\sC10_rename_p1_p2.tab"*    
-*CreateGermlines.createGermlines(db_file=dbfile,references=Germ_files_list)*  
-  
+C:\\Bar_Ilan_3\\projects\\mutations_and_lineage_trees_miniproj\\createGermlines_and_DefineClones.py
+
 Note that that in case the original databse includes colunmes named N1_LENGTH and N2_LENGTH (instead of NP1_LENGTH and NP2_LENGTH) - then they must be renamed to NP1_LENGTH and NP2_LENGTH accordingly.
-  
-The above takes the file SC10_rename_p1_p2.tab w/o GERMLINE_IMGT_D_MASK column, and adds to it the GERMLINE_IMGT_D_MASK column.  
-The output file is named SC10_rename_p1_p2_germ-pass.tab, which is the same content as SC10_rename_p1_p2.tab, but with an additional GERMLINE_IMGT_D_MASK column. 
-
-### Defining clones:  
-In case the Change-O database does not have a "CLONE" column - then this can be generated based on columns V_CALL, J_CALL and JUMCTION. 
-Need to run the following python short script:
-
-
-*import presto*  
-*import changeo*  
-*import sys*  
-*import os*  
-*sys.path.append('C:\\Users\\milcat\\AppData\\Local\\Programs\\Python\\Python36-32\\Scripts')*  
-*import DefineClones*  
-*os.chdir('C:\\Bar Ilan 3 data - not backed up\\Change-O examples\\Changeo_Example')*  
-*os.getcwd()*  
-*DefineClones.defineClones(db_file='C:\\Bar Ilan 3 data - not backed up\\HCV_B\\SC10_rename_p1_p2_germ-pass.tab')*  
-
-The above takes the file SC10_rename_p1_p2_germ-pass.tab w/o CLONE column, and adds to it the CLONE column.  
-The output file is named CI10_rename_p1_p2_germ-pass_clone-pass.tab, which is the same content as SC10_rename_p1_p2_germ-pass.tab, but with an additional CLONE column. 
 
 
 ### Functions for cleaning some lines from database and getting relevant clones list:  
@@ -77,11 +47,11 @@ Checks if a specific clone in database - has more than one GERMLINE_IMGT_D_MASK 
 It will return TRUE if the clone is a proper clone (meaning all its lines in database have same GERMLINE_IMGT_VALUE),
 and FALSE otherwise.
 ```{r func_proper_clone}
-proper_clone <- function(db,clone_num) {
+proper_clone <- function(db,clone_num,GERMLINE_IMGT_col="GERMLINE_IMGT") {
         clone_db<-filter(db,CLONE==clone_num)
         # since the field GERMLINE_IMGT_D_MASK is of factor type of very large size
         #- need first to change it to character type, and then back to factor, which now will be of much lower size:
-        germ_igmt_d_mask_factor_table<-table(as.factor(as.character(clone_db$GERMLINE_IMGT_D_MASK)))
+        germ_igmt_d_mask_factor_table<-table(as.factor(as.character(clone_db[,GERMLINE_IMGT_col])))
         if(length(germ_igmt_d_mask_factor_table)==1) {
                 return(T)
         }
@@ -97,15 +67,15 @@ filtering out lines of database that have improper clones, which either:
  - clones of size 1.  
  - belong to clones with 2 (or more) different values for GERMLINE_IMGT_D_MASK:  
 ```{r func_cleanup_clones}
-cleanup_clones<-function(db,clone_col="CLONE") {
-  clones_db<-clean_one_read_clones(db,clone_col)
-  clones_list<-unique(clones_db[,c(clone_col)])
+cleanup_clones<-function(db,clone_col="CLONE",GERMLINE_IMGT_col="GERMLINE_IMGT") {
+  clones_list<-unique(db[,c(clone_col)])
   for (i in clones_list) {
-          if (proper_clone(clones_db,i)==F) {
-                  clones_db<-filter(clones_db,!!as.name(clone_col)!=i)
+          if (proper_clone(db=db,clone_num = i,GERMLINE_IMGT_col = GERMLINE_IMGT_col)==F) {
+                  db<-filter(db,!!as.name(clone_col)!=i)
+                  print(i)
           }
   }
-  return(clones_db)
+  return(db)
 }
 ```
 
@@ -133,9 +103,14 @@ make_clones_table<- function(db, clone_col="CLONE") {
 #### Function make_chaneoClone_cur_clone:  
 Creating a changeoclone object for one specific clone:  
 ```{r func_make_chaneoClone_cur_clone}
-make_chaneoClone_cur_clone <- function(db,cur_clone_num) {
+make_chaneoClone_cur_clone <- function(db,cur_clone_num,id="SEQUENCE_ID",seq="SEQUENCE_IMGT",
+                                       germ="GERMLINE_IMGT_D_MASK",vcall="V_CALL",jcall="J_CALL",
+                                       junc_len="JUNCTION_LENGTH",clone="CLONE",mask_char="N",
+                                       max_mask=0,pad_end=FALSE) {
   cur_clone_db<-subset(db,CLONE==cur_clone_num)
-  cur_clone_obj<-makeChangeoClone(cur_clone_db)
+  cur_clone_obj<-makeChangeoClone(data=cur_clone_db,id=id,seq=seq,germ=germ,vcall=vcall,jcall=jcall,
+                                       junc_len=junc_len,clone=clone,mask_char=mask_char,
+                                       max_mask=max_mask,pad_end=pad_end)
   cur_clone_obj@data$V_CALL<-cur_clone_obj@v_gene
   cur_clone_obj@data$J_CALL<-cur_clone_obj@j_gene
   cur_clone_obj@data$CLONE<-cur_clone_obj@clone
@@ -243,17 +218,22 @@ make_graph_df <- function(cur_clone_graph,cur_clone_obj) {
 #### function draw_clone_lineage_tree:  
 For viewing a tree plot of a specific clone:  
 ```{r func_draw_clone_lineage_tree, fig.width = 15, fig.height=10}
-draw_clone_lineage_tree<-function(db,cur_clone) {
+draw_clone_lineage_tree<-function(db,cur_clone=NULL,id="SEQUENCE_ID",seq="SEQUENCE_IMGT",
+                                       germ="GERMLINE_IMGT_D_MASK",vcall="V_CALL",jcall="J_CALL",
+                                       junc_len="JUNCTION_LENGTH",clone="CLONE",mask_char="N",
+                                       max_mask=0,pad_end=FALSE) {
   dnapars_exec<-"c:\\Users\\milcat\\phylip-3.698\\exe\\dnapars.exe"
-  ret_class<-make_chaneoClone_cur_clone(db = db,cur_clone_num = cur_clone)
+  ret_class<-make_chaneoClone_cur_clone(db=db,cur_clone_num=cur_clone,id=id,seq=seq,germ=germ,                                                         vcall=vcall,jcall=jcall,junc_len=junc_len, 
+                                        clone=clone,mask_char=mask_char,
+                                        max_mask=max_mask,pad_end=pad_end)
   cur_clone_obj<-ret_class@ChangeoClone_obj
   cur_clone_graph<-make_graph_cur_clone(cur_clone_obj,dnapars_exec)
   V(cur_clone_graph)$color <- ifelse(grepl("Germline",V(cur_clone_graph)$label),"lightgreen",
                               ifelse(grepl("Inferred",V(cur_clone_graph)$label),"lightpink","lightblue"))
   #making the graph vertices show the simple SEQUENCE_ID
   cur_clone_only_df<-filter(all_clones_merged_df,CLONE==cur_clone)
-  V(cur_clone_graph)$seq_num<-cur_clone_only_df[match(V(cur_clone_graph)$label,
-                                                      cur_clone_only_df$ORIG_SEQUENCE_ID),"SEQUENCE_ID"]   
+  #V(cur_clone_graph)$seq_num<-cur_clone_only_df[match(V(cur_clone_graph)$label,
+  #                                                    cur_clone_only_df$ORIG_SEQUENCE_ID),"SEQUENCE_ID"]   
   E(cur_clone_graph)$label <- ""
   par(mar=c(0, 0, 0, 0) + 1)
   plot(cur_clone_graph, layout=layout_as_tree, edge.arrow.mode=0, 
@@ -398,13 +378,13 @@ expectedMutations_L <- function(db,sequenceColumn = "SEQUENCE_IMGT", germlineCol
 ### Using all functions above on database:  
 ```{r use_func_on_db}
 # 1. Loading data from HCV_B database:  
-file_pointer<-"C:\\Bar Ilan 3 data - not backed up\\HCV_B\\CI10_rename_p1_p2_germ-pass_clone-pass.tab"
+file_pointer<-"C:\\Bar Ilan 3 data - not backed up\\HCV_B\\CI10_rename_p1_p2_germ-pass_clone-pass_germ-pass.tab"
 clones_db<-read.csv(file_pointer, header=TRUE,sep='\t')
 dim(clones_db)
 
 # 2. Cleanup data (clean clones with one read only, and clean clones that have 2 or more 
 #    different valuesof GERMLINE_IMGT_D_MASK )
-clones_db<-cleanup_clones(clones_db,clone_col="CLONE")
+clones_db<-cleanup_clones(clones_db,clone_col="CLONE",GERMLINE_IMGT_col = "GERMLINE_IMGT")
 
 # 3. create a list of clones to loop on:  
 clones_to_build_trees<-make_clones_list(clones_db)
@@ -443,5 +423,10 @@ for (clone_index in clones_to_build_trees) {
 #print(loop_end_time)
 all_clones_merged_df<-observedMutations_L(all_clones_merged_df,sequenceColumn = "SEQUENCE")
 all_clones_merged_df<-expectedMutations_L(all_clones_merged_df,sequenceColumn = "SEQUENCE")
+write.csv(all_clones_merged_df,file="C:\\Bar_Ilan_3\\projects\\all_clones_merged_df.csv")
+
+
+NOW NEED to TAKE CARE OF CLONES OF SIZE 1 - AS THEY ARE REMOVED In ABOVE FLOW
+
 ```
 
