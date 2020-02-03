@@ -30,35 +30,122 @@ Note that that in case the original databse includes colunmes named N1_LENGTH an
 
 ### Functions for cleaning some lines from database and getting relevant clones list:  
 
-#### Function clean_one_read_clones: 
-Removes lines that belong to clones with one read ony:  
-```{r func_clean_one_read_clones} 
-clean_one_read_clones<-function(db,clone_col="CLONE") {
-  clones_factor<-as.factor(clones_db[,c(clone_col)])
-  clones_factor_table<-table(clones_factor)
-  clones_db<-filter(db,clones_factor_table[CLONE]!=1)
-  return(clones_db)
+#### Function make_clones_freq_df:
+Reads db, and return a list of clone numbers and their fequency:  
+```{r func_makes_clones_freq_df}
+make_clones_freq_df<-function(data,clone_col="CLONE") {
+  clones_freq<-as.data.frame(ftable(data[,c(clone_col)]))
+  names(clones_freq)<-c("CLONE","CLONE_FREQ")
+  return(clones_freq)
 }
 ```
 
+#### Function list_onread_clones:  
+This function gets as input a clone frequence data frame, and returns a list of clone numbers that have a frequencey of 1.  
+```{r func_list_oneread_clones}
+list_oneread_clones<-function(df,clone_col="CLONE",freq_col="CLONE_FREQ") {
+  #oneread_clones_df<-setNames(data.frame(matrix(ncol=2,nrow=100)), c("CLONE","CLONE_FREQ"))
+  fc<-df[[freq_col]]
+  cc<-df[[clone_col]]
+  len<-length(fc)
+  oneread_clones_df<-data.frame("CLONE"=cc,"CLONE_FREQ"=fc)
+  oneread_clones_df<-subset(oneread_clones_df,CLONE_FREQ==1)
+  oneread_clones<-oneread_clones_df$CLONE
+  return(oneread_clones)
+}
+```
+
+
+#### Function make_list_one_read_clones: 
+Reads db, and return a list of clone numbers that are of one size (=one read in those clones):  
+```{r func_make_list_one_read_clones} 
+#make_list_one_read_clones<-function(db,clone_col="CLONE") {
+#  clones_factor<-db[,c(clone_col)]
+#  clones_factor_table<-table(clones_factor)
+#  clones_factor_df<-as.data.frame(clones_factor_table)
+#  clones_factor_df_oneread<-subset(clones_factor_df,Freq==1)
+#  one_read_clones<-as.integer(clones_factor_df_oneread[,c("clones_factor")])
+#  setClass("oneread_class", slots=list(clones_list="integer", clones_freq="data.frame"))
+#  ret_class<-new("oneread_class",clones_list=one_read_clones,clones_freq=clones_factor_df)
+#  return(ret_class)
+#}
+```
+
+#### Function make_db_oneread_clone:  
+This function gets as input a db, and returns as output a subset db - of lines which belong  
+to clones with one read.  
+```{r func_make_db_oneread_clone}
+make_db_oneread_clone<-function(db,clone_col="CLONE") {
+  clones_freq<-make_clones_freq_df(data=db,clone_col=clone_col)
+  oneread_clones_list<-list_oneread_clones(clones_freq)
+  # a trick for passing through the function the clone_col name:
+  db$CLONE1<-db[[clone_col]]
+  oneread_clones_db<-subset(db,subset = (CLONE1 %in% oneread_clones_list))
+  oneread_clones_db<-select(oneread_clones_db,-c(CLONE1))
+  return(oneread_clones_db)
+}
+```
+
+#### Function db_remove_oneread_clones:  
+This function gets as input a db, and returns as output a line subset db - of lines which belong  
+to clones of 2 or more reads.  
+```{r func_db_remove_oneread_clones}
+db_remove_oneread_clones<-function(db,clone_col="CLONE") {
+  clones_freq<-make_clones_freq_df(data=db,clone_col=clone_col)
+  clones_list<-list_oneread_clones(clones_freq)
+  multireads_clones_db<-filter(db,!(!!as.name(clone_col) %in% clones_list))
+  return(multireads_clones_db)
+}
+```
+
+#### Function make_germ_db:  
+This function gets as input a db, and returns as output same dimention db, but of germline sequences of original db.  
+```{r func_make_germ_db}
+#make_germ_db<-function(db,ger_col="GERMLINE_IMGT",seq_col="SEQUENCE_IMGT",seq_id_col="SEQUENCE_ID",
+#                            clone_col="CLONE",cols2empty=NA) {
+#  db_germ<-db
+#  db_germ[,c(seq_col)]<-db[,c(ger_col)]
+#  db_germ[,c(seq_id_col)]<-paste("Germline_",db[,c(clone_col)],sep="")
+
+#  if (!is.na(cols2empty[1])) {
+#      db_germ[,c(cols2empty)]<-""
+#  }
+#  return(db_germ)
+#}
+```
+
+#### Function enlarge_db_with_germ:  
+This function gets as input a db, and returns an elarged db (with more rows):  
+A new row is added for each read in original db whic belongs to a clone of size 1.  
+The new row added - is the germline infor for this read.  
+Doing this - since otherwise - lineage trees will not be built for such clones.   
+```{r func_enlarge_db_with_germ}
+#enlarge_db_with_germ<-function(db,ger_col="GERMLINE_IMGT",seq_col="SEQUENCE_IMGT",seq_id_col="SEQUENCE_ID",
+#                            clone_col="CLONE",cols2empty=NA) {
+#  oneread_clone_db<-make_db_oneread_clone(db=db,clone_col=clone_col) 
+#  germ_db<-make_germ_db(db=oneread_clone_db,ger_col=ger_col,seq_col=seq_col,seq_id_col=seq_id_col,
+#                            clone_col=clone_col,cols2empty=NA) 
+#  enlarged_db<-rbind(db,germ_db)
+#}
+```
 
 #### Function proper_clone:
 Checks if a specific clone in database - has more than one GERMLINE_IMGT_D_MASK value:
 It will return TRUE if the clone is a proper clone (meaning all its lines in database have same GERMLINE_IMGT_VALUE),
 and FALSE otherwise.
 ```{r func_proper_clone}
-proper_clone <- function(db,clone_num,GERMLINE_IMGT_col="GERMLINE_IMGT") {
-        clone_db<-filter(db,CLONE==clone_num)
-        # since the field GERMLINE_IMGT_D_MASK is of factor type of very large size
-        #- need first to change it to character type, and then back to factor, which now will be of much lower size:
-        germ_igmt_d_mask_factor_table<-table(as.factor(as.character(clone_db[,GERMLINE_IMGT_col])))
-        if(length(germ_igmt_d_mask_factor_table)==1) {
-                return(T)
-        }
-        else {
-                return(F)
-        }
-}
+#proper_clone <- function(db,clone_num,GERMLINE_IMGT_col="GERMLINE_IMGT") {
+#        clone_db<-filter(db,CLONE==clone_num)
+#        # since the field GERMLINE_IMGT_D_MASK is of factor type of very large size
+#        #- need first to change it to character type, and then back to factor, which now will be of much lower size:
+#        germ_igmt_d_mask_factor_table<-table(as.factor(as.character(clone_db[,GERMLINE_IMGT_col])))
+#        if(length(germ_igmt_d_mask_factor_table)==1) {
+#                return(T)
+#        }
+#        else {
+#                return(F)
+#        }
+#}
 ```
 
 
@@ -67,16 +154,16 @@ filtering out lines of database that have improper clones, which either:
  - clones of size 1.  
  - belong to clones with 2 (or more) different values for GERMLINE_IMGT_D_MASK:  
 ```{r func_cleanup_clones}
-cleanup_clones<-function(db,clone_col="CLONE",GERMLINE_IMGT_col="GERMLINE_IMGT") {
-  clones_list<-unique(db[,c(clone_col)])
-  for (i in clones_list) {
-          if (proper_clone(db=db,clone_num = i,GERMLINE_IMGT_col = GERMLINE_IMGT_col)==F) {
-                  db<-filter(db,!!as.name(clone_col)!=i)
-                  print(i)
-          }
-  }
-  return(db)
-}
+#cleanup_clones<-function(db,clone_col="CLONE",GERMLINE_IMGT_col="GERMLINE_IMGT") {
+#  clones_list<-unique(db[,c(clone_col)])
+#  for (i in clones_list) {
+#          if (proper_clone(db=db,clone_num = i,GERMLINE_IMGT_col = GERMLINE_IMGT_col)==F) {
+#                  db<-filter(db,!!as.name(clone_col)!=i)
+#                  print(i)
+#          }
+#  }
+#  return(db)
+#}
 ```
 
 #### Function make_clones_list:  
@@ -263,7 +350,7 @@ make_region <- function(JUNCTION_LENGTH,SEQUENCE_IMGT) {
   SEQ_LEN<-nchar(SEQUENCE_IMGT)
   name<-"IMGT_FULL_BY_REGIONS"
   description<-"IMGT numbering scheme defining the V(D)J segment by individual CDR and FWR regions, including CDR3 and FWR4"
-  boundaries[1:312]<-factor(IMGT_V_BY_REGIONS@boundaries  ,levels=c(levels(IMGT_V_BY_REGIONS@boundaries),"CDR3","FWR4"))
+  boundaries<-factor(IMGT_V_BY_REGIONS@boundaries  ,levels=c(levels(IMGT_V_BY_REGIONS@boundaries),"CDR3","FWR4"))
   boundaries[313:(313+as.integer(JUNCTION_LENGTH)-6-1)]<-factor("CDR3")
   boundaries[(313+as.integer(JUNCTION_LENGTH)-6):SEQ_LEN]<-factor("FWR4")
   seqLength<-SEQ_LEN
@@ -382,15 +469,34 @@ file_pointer<-"C:\\Bar Ilan 3 data - not backed up\\HCV_B\\CI10_rename_p1_p2_ger
 clones_db<-read.csv(file_pointer, header=TRUE,sep='\t')
 dim(clones_db)
 
-# 2. Cleanup data (clean clones with one read only, and clean clones that have 2 or more 
-#    different valuesof GERMLINE_IMGT_D_MASK )
-clones_db<-cleanup_clones(clones_db,clone_col="CLONE",GERMLINE_IMGT_col = "GERMLINE_IMGT")
+# 2. Removing from db sequences that their IMGT sequence is shorter than 312 nucleoties.
+#    The reason for this is that running Expected mutations on them does not run properly, as they are missing full
+#    range of FWR1/CDR1/FWR2/CDR2/FWR3 which is 312 nucleotides (not sure at all why they even exist in the db). 
+clones_db<-subset(clones_db,nchar(as.character(SEQUENCE_IMGT))>=312)
 
-# 3. create a list of clones to loop on:  
+# 3. Keeping in a list - the clone number which have only one read on them:
+clones_freq<-make_clones_freq_df(data=clones_db,clone_col="CLONE")
+oneread_clones<-list_oneread_clones(clones_freq) 
+
+
+# 4. Making a db for only clones of size 1:
+oneread_clones_db<-make_db_oneread_clone(clones_db,clone_col="CLONE")
+
+# 5. Removing clones of size 1. They will be handeled later, and added back to db.
+#   We could add them back in 2 options in pipeline: 
+#     - option 1: before running makeChangeoClone.
+#     - option 2: at the end of the pipeline.
+#   In any case - trying to generate an igraph of a clone of 1 read - will fail. So need to add to the one read clone - 
+#   it's germline. Adding it like in option 1 - might be problematic in cases where the read is equal to it's germline. 
+#   In this case - the makeChangeoClone will collapse the read with its germline sequence, thus generating an igrpah object
+#   from the clone - will not work. This is why it will be done by option 2.
+clones_db<-db_remove_oneread_clones(clones_db,clone_col="CLONE")
+
+# 6. create a list of clones to loop on:  
 clones_to_build_trees<-make_clones_list(clones_db)
 #clones_to_build_trees<-c(4070,12,259,11)
 
-# 4. Loop on all clones in db above:
+# 7. Loop on all clones in db above:
 first_clone<-TRUE
 #loop_start_time<-Sys.time()
 dnapars_exec<-"c:\\Users\\milcat\\phylip-3.698\\exe\\dnapars.exe"
@@ -418,6 +524,49 @@ for (clone_index in clones_to_build_trees) {
   } # endif
 } # endfor
 
+
+
+
+# 8. preparing a db with columns same as final db (all_clones_merged_df) - that includes the clones with one read:  
+#    Tis will be added later to final db.
+oneread_clones_db_new<-setNames(data.frame(matrix(ncol = length(names(all_clones_merged_df)), nrow = length(oneread_clones))), 
+                                names(all_clones_merged_df))
+oneread_clones_db_new[,"CLONE"]                  <-oneread_clones_db[,"CLONE"]
+oneread_clones_db_new[,"V_CALL"]                 <-oneread_clones_db[,"V_CALL"]
+oneread_clones_db_new[,"J_CALL"]                 <-oneread_clones_db[,"J_CALL"]
+oneread_clones_db_new[,"GERMLINE_IMGT_D_MASK"]   <-oneread_clones_db[,"GERMLINE_IMGT_D_MASK"]
+oneread_clones_db_new[,"JUNCTION_LENGTH"]        <-oneread_clones_db[,"JUNCTION_LENGTH"]
+oneread_clones_db_new[,"SEQUENCE"]               <-oneread_clones_db[,"SEQUENCE_IMGT"]
+oneread_clones_db_new[,"ORIG_SEQUENCE_ID"]       <-oneread_clones_db[,"SEQUENCE_ID"]
+oneread_clones_db_new[,"PARENT_SEQUENCE"]        <-oneread_clones_db[,"GERMLINE_IMGT"]
+oneread_clones_db_new[,"PARENT"]                 <-paste(oneread_clones_db[,"CLONE"],"_Germline",sep="")
+oneread_clones_db_new[,"SEQUENCE_ID"]            <-paste(oneread_clones_db[,"CLONE"],"_1",sep="")
+# the bellow is replacing in column "GERMLINE_IMGT_D_MASK" the string "." with "N". 
+# This is since in clones_db this columns uses ".", while in all_clones_merged_df - this column uses "N":
+oneread_clones_db_new<-mutate(oneread_clones_db_new,GERMLINE_IMGT_D_MASK=gsub(pattern="\\.",replacement = "N",
+                                                                               oneread_clones_db_new$GERMLINE_IMGT_D_MASK))
+oneread_clones_db_new<-mutate(oneread_clones_db_new,PARENT_SEQUENCE=gsub(pattern="\\.",replacement = "N",
+                                                                               oneread_clones_db_new$PARENT_SEQUENCE))
+oneread_clones_db_new<-mutate(oneread_clones_db_new,SEQUENCE=gsub(pattern="\\.",replacement = "N",
+                                                                               oneread_clones_db_new$SEQUENCE))
+
+# 9. adding for each one read clone - a new line of its germline:
+oneread_clones_db_germ<-oneread_clones_db_new
+oneread_clones_db_germ$SEQUENCE_ID<-oneread_clones_db_new$PARENT
+oneread_clones_db_germ$SEQUENCE<-oneread_clones_db_new$GERMLINE_IMGT_D_MASK
+oneread_clones_db_germ$PARENT<-"NA"
+oneread_clones_db_germ$ORIG_PARENT<-"Germline"
+oneread_clones_db_germ$PARENT_SEQUENCE<-oneread_clones_db_new$GERMLINE_IMGT_D_MASK
+oneread_clones_db_new<-rbind(oneread_clones_db_new,oneread_clones_db_germ)
+oneread_clones_db_new$SEQUENCE<-as.character(oneread_clones_db_new$SEQUENCE)
+oneread_clones_db_new$V_CALL<-as.character(oneread_clones_db_new$V_CALL)
+oneread_clones_db_new$J_CALL<-as.character(oneread_clones_db_new$J_CALL)
+oneread_clones_db_new$CLONE<-as.character(oneread_clones_db_new$CLONE)
+
+# 10. adding the one read clone db to the main db:
+all_clones_merged_df<-rbind(all_clones_merged_df,oneread_clones_db_new)
+
+
 #loop_end_time<-Sys.time()
 #print(loop_start_time)
 #print(loop_end_time)
@@ -425,8 +574,7 @@ all_clones_merged_df<-observedMutations_L(all_clones_merged_df,sequenceColumn = 
 all_clones_merged_df<-expectedMutations_L(all_clones_merged_df,sequenceColumn = "SEQUENCE")
 write.csv(all_clones_merged_df,file="C:\\Bar_Ilan_3\\projects\\all_clones_merged_df.csv")
 
-
-NOW NEED to TAKE CARE OF CLONES OF SIZE 1 - AS THEY ARE REMOVED In ABOVE FLOW
-
 ```
+
+
 
