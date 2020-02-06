@@ -16,6 +16,7 @@ library(igraph)
 library(shazam)
 library(crayon)
 library(dplyr)
+rm(list=ls())
 ```
 
 ## Processing data: 
@@ -199,19 +200,20 @@ draw_clone_lineage_tree<-function(db,cur_clone=NULL,id="SEQUENCE_ID",seq="SEQUEN
 ```
 
 #### function make_region:  
-Getting as input a JuNCTION_LENGTH, SEQUENCE_IMGT,  
+Getting as input a JUNCTION_LENGTH, SEQUENCE_IMGT, reg_type.  
 and outputing a RegionDefinition object that includes following regions:   
-FWR1: Bases	1 to 78     (based on IMGT_V_BY_REGIONS definitions)  
-CDR1: Bases	79 to 114   (based on IMGT_V_BY_REGIONS definitions) 
-FWR2: Bases	115 to 165  (based on IMGT_V_BY_REGIONS definitions)  
-CDR2: Bases	166 to 195  (based on IMGT_V_BY_REGIONS definitions)  
-FWR3: Bases	196 to 312  (based on IMGT_V_BY_REGIONS definitions)
-CDR3: Bases	313 to (313+JUNCTION_LENGTH-6) - since junction sequnece includes (on the left) the last codon from FWR3,  
-and (on the right) the first codon from FWR4.  
-FWR4: Bases	(313+JUNCTION_LENGTH-6+1) to SEQUENCE_LENGTH.  
-
+If reg_type="ALL", the regions will be as follows:  
+- FWR1: Bases	1 to 78     (based on IMGT_V_BY_REGIONS definitions)  
+- CDR1: Bases	79 to 114   (based on IMGT_V_BY_REGIONS definitions) 
+- FWR2: Bases	115 to 165  (based on IMGT_V_BY_REGIONS definitions)  
+- CDR2: Bases	166 to 195  (based on IMGT_V_BY_REGIONS definitions)  
+- FWR3: Bases	196 to 312  (based on IMGT_V_BY_REGIONS definitions)
+- CDR3: Bases	313 to (313+JUNCTION_LENGTH-6) - since junction sequnece includes (on the left) the last codon from FWR3, and (on the right) the first codon from FWR4.  
+- FWR4: Bases	(313+JUNCTION_LENGTH-6+1) to SEQUENCE_LENGTH.  
+If reg_type="CDR_FWR", the regions will be same as above, except that all FWR1/2/3/4 will be named "FWR",  
+and all CDR1/2/3 will be named "CDR"
 ```{r func_make_region}
-make_region <- function(JUNCTION_LENGTH,SEQUENCE_IMGT) {
+make_region <- function(JUNCTION_LENGTH,SEQUENCE_IMGT,reg_type="ALL") {
   # First need to extract sequence length from sequence:
   SEQ_LEN<-nchar(SEQUENCE_IMGT)
   name<-"IMGT_FULL_BY_REGIONS"
@@ -222,6 +224,15 @@ make_region <- function(JUNCTION_LENGTH,SEQUENCE_IMGT) {
   seqLength<-SEQ_LEN
   regions<-c("CDR1","CDR2","CDR3","FWR1","FWR2","FWR3","FWR4")
   labels<-c("CDR1_R","CDR1_S","CDR2_R","CDR2_S","CDR3_R","CDR3_S","FWR1_R","FWR1_S","FWR2_R","FWR2_S","FWR3_R","FWR3_S","FWR4_R","FWR4_S")
+  if(reg_type=="CDR_FWR") {
+    name<-"IMGT_FULL_BY_CDR_FWR"
+    description<-"IMGT numbering scheme defining the V(D)J segment only by CDR/FWR regions, including CDR3 and FWR4"
+    boundaries<-gsub(pattern="FWR.",replacement = "FWR", x=boundaries,perl=TRUE)
+    boundaries<-gsub(pattern="CDR.",replacement = "CDR", x=boundaries,perl=TRUE)
+    boundaries<-factor(boundaries,levels=c("FWR","CDR"))
+    regions<-c("CDR","FWR")
+    labels<-c("CDR_R","CDR_S","FWR_R","FWR_S")
+  }
   citation<-"http://www.imgt.org/IMGTScientificChart/Nomenclature/IMGT-FRCDRdefinition.html"
   ret_class<-new("RegionDefinition",name=name,description=description,boundaries=boundaries,
                                     seqLength=seqLength,regions=regions,labels=labels,
@@ -236,17 +247,19 @@ And returns the RegionDefinition object of type IMGT_FULL_BY_REGIONS for this sp
 The function gets as input also the column name of the clone and sequence in the data frame.
 Note that the region definition is same for all sequences in clone - so doing it based on first sequence in clone.  
 ```{r func_get_clone_region}
-get_clone_region <- function(db,clone_num,seq_col="SEQUENCE",junc_len_col="JUNCTION_LENGTH",clone_col="CLONE") {
+get_clone_region <- function(db,clone_num,seq_col="SEQUENCE",junc_len_col="JUNCTION_LENGTH",
+                             clone_col="CLONE",reg_type="ALL") {
   # getting one of the sequences of the specific clone: 
   # clone_col1<-as.symbol(clone_col)
   clone_db<-filter(db,(!!as.name(clone_col))==clone_num)
   #clone_db<-filter(db,CLONE==clone_num)
   seq<-clone_db[1,seq_col]
   junc_len<-clone_db[1,junc_len_col]
-  reg<-make_region(JUNCTION_LENGTH = junc_len, SEQUENCE_IMGT = seq)
+  reg<-make_region(JUNCTION_LENGTH = junc_len, SEQUENCE_IMGT = seq, reg_type=reg_type)
   return(reg)
 }
 ```
+
 
 #### function observedMutations_L:  
 Very similar to observedMutations function, except that it runs with regard to parent sequence in lineage tree,  
@@ -255,7 +268,7 @@ mutations is computed with regard to its parent sequence (and not with regard to
 Note: The regionDefinition - is different for each clone.
 ```{r func_observedMutations_L}
 observedMutations_L <- function(db,sequenceColumn = "SEQUENCE_IMGT", refColumn = "PARENT_SEQUENCE",
-                                clone_col="CLONE", mutationDefinition = NULL, 
+                                clone_col="CLONE", reg_type="ALL", mutationDefinition = NULL, 
                                 ambiguousMode = c("eitherOr", "and"), 
                                 frequency = FALSE, combine = FALSE, nproc = 1) {
   # Since each clone needs a different regionDefinition - then this function will loop on all clones in db,
@@ -269,7 +282,8 @@ observedMutations_L <- function(db,sequenceColumn = "SEQUENCE_IMGT", refColumn =
     cur_clone_db<-filter(db,(!!as.name(clone_col))==cur_clone)
     # setting the regionDefinition for the specific clone:
     cur_clone_reg<-make_region(JUNCTION_LENGTH = cur_clone_db[1,"JUNCTION_LENGTH"],
-                               SEQUENCE_IMGT =   cur_clone_db[1,"SEQUENCE"])
+                               SEQUENCE_IMGT =   cur_clone_db[1,"SEQUENCE"],
+                               reg_type=reg_type)
     clone_observeedMutations_db<-observedMutations(db=cur_clone_db,sequenceColumn = sequenceColumn,
                                                    germlineColumn=refColumn,
                                                    regionDefinition=cur_clone_reg,                                              
@@ -296,8 +310,8 @@ mutations is computed with regard to its parent sequence (and not with regard to
 Note: The regionDefinition - is different for each clone.
 ```{r func_expectedMutations_L}
 expectedMutations_L <- function(db,sequenceColumn = "SEQUENCE_IMGT", refColumn = "PARENT_SEQUENCE",
-                                clone_col="CLONE",targetingModel = HH_S5F, mutationDefinition = NULL, 
-                                nproc = 1) {
+                                clone_col="CLONE",reg_type="ALL", targetingModel = HH_S5F,
+                                mutationDefinition = NULL, nproc = 1) {
   # Since each clone needs a different regionDefinition - then this function will loop on all clones in db,
   # and for each clone will run the function expectedMutations with its own regionDefinition.
   # For all clones - the refColumn will point to the parent sequence column.
@@ -309,7 +323,8 @@ expectedMutations_L <- function(db,sequenceColumn = "SEQUENCE_IMGT", refColumn =
     cur_clone_db<-filter(db,(!!as.name(clone_col))==cur_clone)
     # setting the regionDefinition for the specific clone:
     cur_clone_reg<-make_region(JUNCTION_LENGTH = cur_clone_db[1,"JUNCTION_LENGTH"],
-                               SEQUENCE_IMGT =   cur_clone_db[1,"SEQUENCE"])
+                               SEQUENCE_IMGT =   cur_clone_db[1,"SEQUENCE"],
+                               reg_type=reg_type)
     clone_expectedMutations_db<-expectedMutations(db=cur_clone_db,sequenceColumn = sequenceColumn,
                                                    germlineColumn =refColumn,
                                                    targetingModel=targetingModel,
@@ -329,8 +344,9 @@ expectedMutations_L <- function(db,sequenceColumn = "SEQUENCE_IMGT", refColumn =
 } # end of function
 ```
 
-### Using all functions above on database:  
-```{r use_func_on_db}
+
+### Main program: Using all functions above on database:  
+```{r main_program}
 # 1. Loading data from HCV_B database:  
 file_pointer<-"C:\\Bar Ilan 3 data - not backed up\\HCV_B\\CI10_rename_p1_p2_germ-pass_clone-pass_germ-pass.tab"
 clones_db<-read.csv(file_pointer, header=TRUE,sep='\t')
@@ -418,9 +434,20 @@ oneread_clones_db_new$CLONE<-as.character(oneread_clones_db_new$CLONE)
 all_clones_merged_df<-rbind(all_clones_merged_df,oneread_clones_db_new)
 
 # 8. adding to db - the expected and obsereved mutation columns - for all regions.
-all_clones_merged_df<-observedMutations_L(all_clones_merged_df,sequenceColumn = "SEQUENCE")
-all_clones_merged_df<-expectedMutations_L(all_clones_merged_df,sequenceColumn = "SEQUENCE")
-write.csv(all_clones_merged_df,file="C:\\Bar_Ilan_3\\projects\\all_clones_merged_df.csv")
+all_clones_merged_df_ALL_regions<-observedMutations_L(all_clones_merged_df,
+                                                      sequenceColumn = "SEQUENCE",
+                                                      reg_type="ALL")
+all_clones_merged_df_ALL_regions<-expectedMutations_L(all_clones_merged_df_ALL_regions,
+                                                      sequenceColumn = "SEQUENCE",
+                                                      reg_type="ALL")
+all_clones_merged_df_CDRFWR_regions<-observedMutations_L(all_clones_merged_df,
+                                                         sequenceColumn = "SEQUENCE",
+                                                         reg_type = "CDR_FWR")
+all_clones_merged_df_CDRFWR_regions<-expectedMutations_L(all_clones_merged_df_CDRFWR_regions,
+                                                         sequenceColumn = "SEQUENCE",
+                                                         reg_type = "CDR_FWR")
+
+#write.csv(all_clones_merged_df,file="C:\\Bar_Ilan_3\\projects\\all_clones_merged_df.csv")
 
 ```
 
