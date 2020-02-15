@@ -16,6 +16,8 @@ library(igraph)
 library(shazam)
 library(crayon)
 library(dplyr)
+library(foreach)
+library(doParallel)
 rm(list=ls())
 ```
 
@@ -247,7 +249,7 @@ And returns the RegionDefinition object of type IMGT_FULL_BY_REGIONS for this sp
 The function gets as input also the column name of the clone and sequence in the data frame.
 Note that the region definition is same for all sequences in clone - so doing it based on first sequence in clone.  
 ```{r func_get_clone_region}
-get_clone_region <- function(db,clone_num,seq_col="SEQUENCE",junc_len_col="JUNCTION_LENGTH",
+get_clone_region <- function(clone_num,db,seq_col="SEQUENCE",junc_len_col="JUNCTION_LENGTH",
                              clone_col="CLONE",reg_type="ALL") {
   # getting one of the sequences of the specific clone: 
   # clone_col1<-as.symbol(clone_col)
@@ -260,6 +262,37 @@ get_clone_region <- function(db,clone_num,seq_col="SEQUENCE",junc_len_col="JUNCT
 }
 ```
 
+#### function make_regions_dict:  
+This function gets as input a data frame, and returns a named list.  The list elements names are all the  
+numbers in the data frame, and the list elements are 2 region definitions objects for each clone:  
+The first object in each list element will be region of type "IMGT_FULL_BY_REGIONS", and the 2nd will be of type "IMGT_FULL_BY_CDR_FWR".  
+```{r func_make_regions_dict}
+make_regions_dict<-function(db,seq_col="SEQUENCE",junc_len_col="JUNCTION_LENGTH",clone_col="CLONE") {
+  # First stage is to create a temporary db that includes one row per clone, as only one line per clone is needed to compute its regions definitions. This row will include only relevant columns to compute the regions.
+  # First - removing unrelated columns:
+  db_tmp<-subset(db,select=c(seq_col,junc_len_col,clone_col))
+  # now need to remove lines, such that each clone will have only one line:  
+  db_tmp$DUPLICATED_CLONE<-duplicated(db_tmp$CLONE)
+  db_tmp<-filter(db_tmp,DUPLICATED_CLONE==FALSE)
+  # now prepare the lists. First - define their elements names as the clones numbers:  
+  clones_regions_list_ALL<-vector(mode="list", length=length(db_tmp$DUPLICATED_CLONE))
+  clones_regions_list_CDR_FWR<-vector(mode="list", length=length(db_tmp$DUPLICATED_CLONE))
+  names(clones_regions_list_ALL)<-db_tmp$CLONE
+  names(clones_regions_list_CDR_FWR)<-db_tmp$CLONE
+  # setting a list where each element is the IMGT_FULL_BY_REGIONS region definition:
+  clones_regions_list_ALL<-sapply(X=db_tmp$CLONE,FUN=get_clone_region,db=db_tmp,seq_col=seq_col,
+                                  junc_len_col=junc_len_col,
+                                  clone_col=clone_col,reg_type="ALL")
+  # setting a list where each element is the IMGT_FULL_BY_CDR_FWR region definition:
+  clones_regions_list_CDR_FWR<-sapply(X=db_tmp$CLONE,FUN=get_clone_region,db=db_tmp,seq_col=seq_col,
+                              junc_len_col=junc_len_col,
+                              clone_col=clone_col,reg_type="CDR_FWR")
+  # merging 2 lists as they have same names:
+  clones_regions_list<-mapply(c,clones_regions_list_ALL,clones_regions_list_CDR_FWR,SIMPLIFY = FALSE)
+  names(clones_regions_list)<-names(clones_regions_list_ALL)
+  return(clones_regions_list)
+}
+```
 
 #### function observedMutations_L:  
 Very similar to observedMutations function, except that it runs with regard to parent sequence in lineage tree,  
@@ -342,6 +375,227 @@ expectedMutations_L <- function(db,sequenceColumn = "SEQUENCE_IMGT", refColumn =
   } # end of for loop
   return(expectedMutations_db)
 } # end of function
+```
+#### Function collapse_one_clone:  
+This function is the same as original collapseClones function, except that it works on one clone only.  
+```{r func_collapse_one_clone}
+collapse_one_clone<-function(clone_num,db,junc_len_col="JUNCTION_LENGTH", cloneColumn = "CLONE",
+                             sequenceColumn = "SEQUENCE_IMGT", reg_type = "ALL",
+                             germlineColumn = "GERMLINE_IMGT_D_MASK", muFreqColumn = NULL, 
+                             method=c("mostCommon","thresholdedFreq","catchAll","mostMutated","leastMutated"),
+                             minimumFrequency = NULL,includeAmbiguous = FALSE, breakTiesStochastic = FALSE,
+                             breakTiesByColumns = NULL, expandedDb = FALSE, nproc = 1) {
+  clone_db<-filter(db,(!!as.name(cloneColumn))==clone_num)
+  clone_reg_def<-get_clone_region(clone_num=clone_num,db=clone_db,seq_col=sequenceColumn,
+                                  junc_len_col=junc_len_col,clone_col=cloneColumn,reg_type=reg_type)
+  collapsed_clone<-collapseClones(db=clone_db,cloneColumn = cloneColumn,sequenceColumn = sequenceColumn,
+                                  germlineColumn = germlineColumn, muFreqColumn = muFreqColumn, 
+                                  regionDefinition = clone_reg_def, method = method, 
+                                  minimumFrequency = minimumFrequency,includeAmbiguous = includeAmbiguous,
+                                  breakTiesStochastic = breakTiesStochastic, 
+                                  breakTiesByColumns=breakTiesByColumns, expandedDb=expandedDb, nproc=nproc)
+  return(collapsed_clone)
+}
+```
+
+#### Function collapseClones_L:  
+This is the same as original collapseClones function, except that the region definition will be set per clone in the database, in order to include CDR3 and FWR4 in the region definition (Note: in original function collapseClones - one region definition is defined for all clones in db).  
+```{r func collapseClones_L}
+collapseClones_L<-function(db,cloneColumn = "CLONE", junc_len_col="JUNCTION_LENGTH",
+                           sequenceColumn = "SEQUENCE_IMGT", reg_type="ALL", 
+                           germlineColumn = "GERMLINE_IMGT_D_MASK", muFreqColumn = NULL, 
+                           method = c("mostCommon","thresholdedFreq","catchAll","mostMutated","leastMutated"),
+                           minimumFrequency = NULL,includeAmbiguous = FALSE, breakTiesStochastic = FALSE,
+                           breakTiesByColumns = NULL, expandedDb = FALSE, nproc = 1) {
+  clones_list<-make_clones_list(db=db,clone_col=cloneColumn)
+  collapsed_clones_list<-sapply(X = clones_list,FUN = collapse_one_clone,
+                              db=db,junc_len_col=junc_len_col, cloneColumn = cloneColumn,
+                              sequenceColumn = sequenceColumn, reg_type = reg_type,
+                              germlineColumn = germlineColumn, muFreqColumn = muFreqColumn, 
+                              method=method,
+                              minimumFrequency = minimumFrequency,includeAmbiguous = includeAmbiguous,
+                              breakTiesStochastic = breakTiesStochastic,
+                              breakTiesByColumns = breakTiesByColumns, expandedDb = expandedDb, 
+                              nproc = nproc,simplify = FALSE, USE.NAMES = FALSE)
+  
+  # transposing result rows and columns and coercing to data frame
+  #collapsed_clones_db<-as.data.frame(t(collapsed_clones_db))
+  collapsed_clones_db<-do.call("rbind",collapsed_clones_list)
+  
+  return(collapsed_clones_db)
+}
+```
+
+### Function calcBaseline_one_line:  
+This function calculates baseline for one clone in db.  
+It will first calculate the specific clone region definition (which is specific to the clone).  
+```{func_calcBaseline_one_clone}
+calcBaseline_one_clone<-function(clone_num,db, sequenceColumn = "SEQUENCE_IMGT", clone_col="CLONE",
+                                 junc_len_col="JUNCTION_LENGTH",
+                                 germlineColumn = "GERMLINE_IMGT",
+                                 testStatistic = c("local", "focused", "imbalanced"), 
+                                 regionDefinition = c("ALL","CDR_FWR"),
+                                 targetingModel = HH_S5F, 
+                                 mutationDefinition = NULL,
+                                 calcStats = FALSE, 
+                                 nproc = 1) {
+  clone_db<-filter(db,(!!as.name(clone_col))==clone_num)
+  reg_def<-get_clone_region(clone_num=clone_num, db=db, 
+                              seq_col=sequenceColumn,
+                              junc_len_col=junc_len_col,
+                              clone_col=clone_col,reg_type=regionDefinition)
+  clone_baseline<-calcBaseline(db=clone_db,sequenceColumn = sequenceColumn,
+                               germlineColumn = germlineColumn, testStatistic = testStatistic,
+                               regionDefinition = reg_def,
+                               targetingModel = targetingModel,
+                               mutationDefinition = mutationDefinition,
+                               calcStats = calcStats, nproc = nproc)
+  return(clone_baseline)
+}
+
+```
+
+#### Function calcBaseline_L:  
+This function calculates baseline for many sequences in a db, while each sequence is of different junction length, and thus may have a different region definition.  
+This function output is a Baseline_L object class, which is very similar to an object of class Baseline,  
+except for the slot regionDefinition which is now a list of RegionDefinition objects, and not just one such.  
+Basically, this function uses the function calcBaseline_one_clone to calculate a "clone baseline" for each clone number, and then it concatenates (for each slot separately) all the "clone baseline" same slots to one.
+For example:  
+db slot is concatenation (rbind) of all the db slots of all "clone baselines" db slots.  
+same for all following slots:
+- db
+- numbOfSeqs
+- binomK
+- binomN
+- binomP
+- pdfs
+- stats
+The following slots will be accumulated to form a new slot which is a list (not rbind/concatenate):  
+- regionDefinition
+- 
+The following slots will remain with no change:
+- description
+- testStatistic
+- regions
+
+```{r func_calcBaseline_L}
+calcBaseline_L<-function(db, sequenceColumn = "CLONAL_IMGT",germlineColumn = "GERMLINE_IMGT",
+                         testStatistic = c("local","focused", "imbalanced"),clone_col="CLONE", 
+                         regionDefinition = c("ALL","CDR_FWR"),targetingModel = HH_S5F, 
+                         mutationDefinition = NULL, calcStats = FALSE, nproc = 1) {
+  clones_list<-make_clones_list(db=db, clone_col=clone_col)
+  
+  # bellow 2 lines are for running faster in parallel cores:
+  cl <- makeCluster(detectCores(), type='PSOCK')
+  registerDoParallel(cl)
+
+  clones_baseline_list<-sapply(X=clones_list,FUN=calcBaseline_one_clone,db=db,
+                                  sequenceColumn = sequenceColumn, clone_col=clone_col,
+                                  germlineColumn = germlineColumn,
+                                  testStatistic = testStatistic,
+                                  regionDefinition = regionDefinition,
+                                  targetingModel = targetingModel,
+                                  mutationDefinition = mutationDefinition,
+                                  calcStats = calcStats, nproc = nproc)
+  
+  # now setting the different slots of the result baseline class:
+  # description:
+  baseline_description<-"Baseline generated based on function calcBaseline_L, where each clone's region definition is calculated separately upon its length"
+  
+  #testStatistic:
+  baseline_testStatistic<-clones_baseline_list[[1]]@testStatistic
+  
+  #regions:
+  baseline_regions<-clones_baseline_list[[1]]@regions
+  
+  # db:
+  db_list<-sapply(X=clones_list,FUN=function(x2) clones_baseline_list[[x2]]@db,
+                  USE.NAMES = FALSE,simplify = FALSE)
+  
+  baseline_db<-do.call("rbind",db_list)
+  
+  #numbOfSeqs:
+  numbOfSeqs_list<-sapply(X=clones_list,FUN=function(x2) clones_baseline_list[[x2]]@numbOfSeqs,
+                          USE.NAMES = FALSE,simplify = FALSE)
+  baseline_numbOfSeqs<-do.call("rbind",numbOfSeqs_list)
+  rownames(baseline_numbOfSeqs)<-as.character(c(1:dim(baseline_numbOfSeqs)[1]))
+  
+  #binomK:
+  binomK_list<-sapply(X=clones_list,FUN=function(x2) clones_baseline_list[[x2]]@binomK,
+                      USE.NAMES = FALSE, simplify = FALSE)
+  baseline_binomK<-do.call("rbind",binomK_list)
+  rownames(baseline_binomK)<-as.character(c(1:dim(baseline_binomK)[1]))
+  
+  #binomN:
+  binomN_list<-sapply(X=clones_list,FUN=function(x2) clones_baseline_list[[x2]]@binomN,
+                      USE.NAMES = FALSE, simplify = FALSE)
+  baseline_binomN<-do.call("rbind",binomN_list)
+  rownames(baseline_binomN)<-as.character(c(1:dim(baseline_binomN)[1]))
+  
+  #binomP:
+  binomP_list<-sapply(X=clones_list,FUN=function(x2) clones_baseline_list[[x2]]@binomP,
+                      USE.NAMES = FALSE, simplify = FALSE)
+  baseline_binomP<-do.call("rbind",binomP_list)
+  rownames(baseline_binomP)<-as.character(c(1:dim(baseline_binomP)[1]))
+  
+  #pdfs:
+  # First - setting an empty list with proper length and names:
+  baseline_pdfs.names <- names(clones_baseline_list[[1]]@pdfs)
+  baseline_pdfs <- vector("list", length(baseline_pdfs.names))
+  names(baseline_pdfs) <- baseline_pdfs.names
+  # now each list element is a matrix:
+  for (pdf in names(clones_baseline_list[[1]]@pdfs)) {
+    pdf_list<-sapply(X=clones_list,FUN=function(x2) clones_baseline_list[[x2]]@pdfs[[pdf]],
+                     USE.NAMES = FALSE, simplify = FALSE)
+    baseline_pdfs[[pdf]]<-do.call("rbind",pdf_list)
+  }  
+  
+  #stats:
+  stats_list<-sapply(X=clones_list,FUN=function(x2) clones_baseline_list[[x2]]@stats,
+                         USE.NAMES = FALSE, simplify = FALSE)
+  baseline_stats<-do.call("rbind",stats_list)
+  
+  #regionDefinition: This is the only slot in output baseline whihc is not the same class as in standard
+  #                 calcBaseline output, as it is different for each clone. So the class here is a list
+  #                 of regionDefinition objects (and not just one such) 
+  regionDefinition_list<-sapply(X=clones_list,FUN=function(x2) clones_baseline_list[[x2]]@regionDefinition,
+                                USE.NAMES = FALSE, simplify = FALSE)
+  names(regionDefinition_list)<-clones_list
+  
+  # setting a new class named Baseline_L. Same slots as Baseline, all slots (except regionDefinition) are of same type as Baseline slots. regionDefinition slot here is a list of RegionDefinition, while in Baseline it is one RegionDefinition only.
+  setClass("Baseline_L", slots=list(description="character", db="data.frame", regionDefinition="list",
+                                    testStatistic="character", regions="character", numbOfSeqs="matrix",
+                                    binomK="matrix", binomN="matrix", binomP="matrix",
+                                    pdfs="list", stats="data.frame"))
+
+  ret_class<-new("Baseline_L",description=baseline_description, db=baseline_db, 
+                 regionDefinition=regionDefinition_list, testStatistic=baseline_testStatistic,
+                 regions=baseline_regions, numbOfSeqs=baseline_numbOfSeqs, 
+                 binomK=baseline_binomK, binomN=baseline_binomN, binomP=baseline_binomP,
+                 pdfs=baseline_pdfs, stats=baseline_stats)  
+  # going back to none paralel mode:
+  registerDoSEQ()
+  return(ret_class)
+}
+
+
+
+
+```
+
+#### Function groupBaselin_L:  
+This is the same as function groupBAseline, excepts that it receives a Baseline_L object instead of a  
+Baseline object as input.  
+```{r func_groupBaseline_L}
+groupBaseline_L<-function(baseline_L, groupBy, nproc=1) {
+  ret_class<-new("Baseline",description=baseline_L@description, db=baseline_L@db, 
+                 regionDefinition=baseline_L@regionDefinition[[2]], testStatistic=baseline_L@testStatistic,
+                 regions=baseline_L@regions, numbOfSeqs=baseline_L@numbOfSeqs, 
+                 binomK=baseline_L@binomK, binomN=baseline_L@binomN, binomP=baseline_L@binomP,
+                 pdfs=baseline_L@pdfs, stats=baseline_L@stats)
+  baseline1<-groupBaseline(ret_class,groupBy = groupBy, nproc=nproc)
+  return(baseline1)
+}
 ```
 
 
@@ -433,7 +687,30 @@ oneread_clones_db_new$CLONE<-as.character(oneread_clones_db_new$CLONE)
 # 7. adding the one read clone db to the main db:
 all_clones_merged_df<-rbind(all_clones_merged_df,oneread_clones_db_new)
 
-# 8. adding to db - the expected and obsereved mutation columns - for all regions.
+# 8. Generating region definition list for all clones in db:
+clones_regions_list<-make_regions_dict(all_clones_merged_df)
+
+#10. Calculating "consensus" sequence through "collapasClones" on all clones, and drawing PDF: 
+#    (Note: cannot use all possible :methods" due to some NA in db)
+collapsed_db<-collapseClones_L(db=all_clones_merged_df, 
+                               sequenceColumn = "SEQUENCE", reg_type="ALL",
+                               germlineColumn = "GERMLINE_IMGT",method="mostMutated")
+collapsed_db_baseline<-calcBaseline_L(db=collapsed_db,sequenceColumn = "CLONAL_SEQUENCE",
+                                 germlineColumn = "CLONAL_GERMLINE",regionDefinition = "ALL")
+# adding a columns with same value - for the groupBaseline pdf below:
+collapsed_db_baseline@db$SAME<-"same"
+collapsed_db_group_baseline<-groupBaseline_L(baseline=collapsed_db_baseline,groupBy = "SAME")
+
+collapsed_db_group<-groupBaseline(collapsed_db_baseline,groupBy = CLONE)
+
+collapsed_db_baseline@db$SAME<-"same_val"
+collapsed_db_group_baseline_ALL<-groupBaseline(baseline = collapsed_db_baseline_ALL, 
+                                               groupBy = c("SAME"))
+plotBaselineDensity(collapsed_db_group_baseline_ALL,idColumn = "SAME",sigmaLimits = c(-0.2,0.2),
+                    title="PDF of collapsed clones consensus sequences")
+
+
+#10. adding to db (before collapsed) - the expected and obsereved mutation columns - for all regions.
 all_clones_merged_df_ALL_regions<-observedMutations_L(all_clones_merged_df,
                                                       sequenceColumn = "SEQUENCE",
                                                       reg_type="ALL")
@@ -446,7 +723,6 @@ all_clones_merged_df_CDRFWR_regions<-observedMutations_L(all_clones_merged_df,
 all_clones_merged_df_CDRFWR_regions<-expectedMutations_L(all_clones_merged_df_CDRFWR_regions,
                                                          sequenceColumn = "SEQUENCE",
                                                          reg_type = "CDR_FWR")
-
 #write.csv(all_clones_merged_df,file="C:\\Bar_Ilan_3\\projects\\all_clones_merged_df.csv")
 
 ```
