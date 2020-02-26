@@ -14,11 +14,13 @@ knitr::opts_chunk$set(echo = TRUE)
 library(alakazam)
 library(igraph)
 library(shazam)
-library(crayon)
+#library(crayon)
 library(dplyr)
 library(foreach)
 library(doParallel)
+library(ggpubr)
 rm(list=ls())
+gc()
 ```
 
 ## Processing data: 
@@ -439,7 +441,8 @@ calcBaseline_one_clone<-function(clone_num,db, sequenceColumn = "SEQUENCE_IMGT",
                                  mutationDefinition = NULL,
                                  calcStats = FALSE, 
                                  nproc = 1) {
-  clone_db<-filter(db,(!!as.name(clone_col))==clone_num)
+  #clone_db<-filter(db,(!!as.name(clone_col))==clone_num)
+  clone_db<-filter(db,clone_col==clone_num)
   reg_def<-get_clone_region(clone_num=clone_num, db=db, 
                               seq_col=sequenceColumn,
                               junc_len_col=junc_len_col,
@@ -452,7 +455,6 @@ calcBaseline_one_clone<-function(clone_num,db, sequenceColumn = "SEQUENCE_IMGT",
                                calcStats = calcStats, nproc = nproc)
   return(clone_baseline)
 }
-
 ```
 
 #### Function calcBaseline_L:  
@@ -589,7 +591,7 @@ Baseline object as input.
 ```{r func_groupBaseline_L}
 groupBaseline_L<-function(baseline_L, groupBy, nproc=1) {
   ret_class<-new("Baseline",description=baseline_L@description, db=baseline_L@db, 
-                 regionDefinition=baseline_L@regionDefinition[[2]], testStatistic=baseline_L@testStatistic,
+                 regionDefinition=baseline_L@regionDefinition[[1]], testStatistic=baseline_L@testStatistic,
                  regions=baseline_L@regions, numbOfSeqs=baseline_L@numbOfSeqs, 
                  binomK=baseline_L@binomK, binomN=baseline_L@binomN, binomP=baseline_L@binomP,
                  pdfs=baseline_L@pdfs, stats=baseline_L@stats)
@@ -599,8 +601,8 @@ groupBaseline_L<-function(baseline_L, groupBy, nproc=1) {
 ```
 
 
-### Main program: Using all functions above on database:  
-```{r main_program}
+### Processing data prior to data analysis: Using all functions above on database:  
+```{r data_process}
 # 1. Loading data from HCV_B database:  
 file_pointer<-"C:\\Bar Ilan 3 data - not backed up\\HCV_B\\CI10_rename_p1_p2_germ-pass_clone-pass_germ-pass.tab"
 clones_db<-read.csv(file_pointer, header=TRUE,sep='\t')
@@ -613,7 +615,6 @@ clones_db<-subset(clones_db,nchar(as.character(SEQUENCE_IMGT))>=312)
 
 # 3. create a list of clones to loop on:  
 clones_to_build_trees<-make_clones_list(clones_db)
-#clones_to_build_trees<-c(4070,12,259,11)
 
 # 4. Loop on all clones in db above:
 first_clone<-TRUE
@@ -658,7 +659,8 @@ for (clone_index in clones_to_build_trees) {
 #        a. clones that in original db had one read only.
 #        b. clones that had more than one read, but after running makeChangeoClone - all read collapsed all to one line.
 #    These clones of size 1 will be added later to final db.
-oneread_clones_db_new<-setNames(data.frame(matrix(ncol = length(names(all_clones_merged_df)), nrow = length(size_1_clones))), 
+oneread_clones_db_new<-setNames(data.frame(matrix(ncol = length(names(all_clones_merged_df)), 
+                                                  nrow = length(size_1_clones))), 
                                 names(all_clones_merged_df))
 oneread_clones_db_new[,"CLONE"]                  <-size_1_clone_db[,"CLONE"]
 oneread_clones_db_new[,"V_CALL"]                 <-size_1_clone_db[,"V_CALL"]
@@ -684,47 +686,275 @@ oneread_clones_db_new$V_CALL<-as.character(oneread_clones_db_new$V_CALL)
 oneread_clones_db_new$J_CALL<-as.character(oneread_clones_db_new$J_CALL)
 oneread_clones_db_new$CLONE<-as.character(oneread_clones_db_new$CLONE)
 
-# 7. adding the one read clone db to the main db:
+
+# 7. adding the one read clone db to the main db, and removing unused variables to clear memory:
+none_singletone_db<-all_clones_merged_df
 all_clones_merged_df<-rbind(all_clones_merged_df,oneread_clones_db_new)
+gc()
+```
 
-# 8. Generating region definition list for all clones in db:
-clones_regions_list<-make_regions_dict(all_clones_merged_df)
-
-#10. Calculating "consensus" sequence through "collapasClones" on all clones, and drawing PDF: 
+### Data analysis 1: Comparing PDFs of 2 methods of grouping:  
+1. PDFs using consensus clones.  
+2. PDFs using parents sequences.  
+```{r data_analysis_1}
+#1.  Calculating "consensus" sequence through "collapasClones" on all clones, and drawing PDF: 
 #    (Note: cannot use all possible :methods" due to some NA in db)
+all_clones_merged_df$ORIG_SEQUENCE_ID<-as.character(all_clones_merged_df$ORIG_SEQUENCE_ID)
 collapsed_db<-collapseClones_L(db=all_clones_merged_df, 
                                sequenceColumn = "SEQUENCE", reg_type="ALL",
                                germlineColumn = "GERMLINE_IMGT",method="mostMutated")
 collapsed_db_baseline<-calcBaseline_L(db=collapsed_db,sequenceColumn = "CLONAL_SEQUENCE",
                                  germlineColumn = "CLONAL_GERMLINE",regionDefinition = "ALL")
-# adding a columns with same value - for the groupBaseline pdf below:
+# adding a column with same value - for the groupBaseline pdf below:
+gc()
 collapsed_db_baseline@db$SAME<-"same"
-collapsed_db_group_baseline<-groupBaseline_L(baseline=collapsed_db_baseline,groupBy = "SAME")
+collapsed_db_group_baseline<-groupBaseline_L(baseline_L=collapsed_db_baseline,groupBy = "SAME")
 
-collapsed_db_group<-groupBaseline(collapsed_db_baseline,groupBy = CLONE)
+#Doing the same for "CDR_FWR" regionDefinition:
+collapsed_db2<-collapseClones_L(db=all_clones_merged_df, 
+                               sequenceColumn = "SEQUENCE", reg_type="CDR_FWR",
+                               germlineColumn = "GERMLINE_IMGT",method="mostMutated")
+collapsed_db_baseline2<-calcBaseline_L(db=collapsed_db2,sequenceColumn = "CLONAL_SEQUENCE",
+                                 germlineColumn = "CLONAL_GERMLINE",regionDefinition = "CDR_FWR")
+# adding a column with same value - for the groupBaseline pdf below:
+gc()
+collapsed_db_baseline2@db$SAME<-"same"
+collapsed_db_group_baseline2<-groupBaseline_L(baseline_L=collapsed_db_baseline2,groupBy = "SAME")
 
-collapsed_db_baseline@db$SAME<-"same_val"
-collapsed_db_group_baseline_ALL<-groupBaseline(baseline = collapsed_db_baseline_ALL, 
-                                               groupBy = c("SAME"))
-plotBaselineDensity(collapsed_db_group_baseline_ALL,idColumn = "SAME",sigmaLimits = c(-0.2,0.2),
-                    title="PDF of collapsed clones consensus sequences")
 
+#2. Calculating baseline for all reads - when ref sequence is the parent sequence, and not the germline sequence.
+#expanding memory alocation:
+gc()
+memory.limit(size = 15000)
+parent_db_baseline<-calcBaseline_L(db=all_clones_merged_df,
+                                    sequenceColumn = "SEQUENCE",
+                                    germlineColumn = "PARENT_SEQUENCE",regionDefinition = "ALL")
+parent_db_baseline@db$SAME<-"same"
+parent_db_group_baseline<-groupBaseline_L(baseline_L = parent_db_baseline, groupBy = "SAME")
 
-#10. adding to db (before collapsed) - the expected and obsereved mutation columns - for all regions.
-all_clones_merged_df_ALL_regions<-observedMutations_L(all_clones_merged_df,
-                                                      sequenceColumn = "SEQUENCE",
-                                                      reg_type="ALL")
-all_clones_merged_df_ALL_regions<-expectedMutations_L(all_clones_merged_df_ALL_regions,
-                                                      sequenceColumn = "SEQUENCE",
-                                                      reg_type="ALL")
-all_clones_merged_df_CDRFWR_regions<-observedMutations_L(all_clones_merged_df,
-                                                         sequenceColumn = "SEQUENCE",
-                                                         reg_type = "CDR_FWR")
-all_clones_merged_df_CDRFWR_regions<-expectedMutations_L(all_clones_merged_df_CDRFWR_regions,
-                                                         sequenceColumn = "SEQUENCE",
-                                                         reg_type = "CDR_FWR")
-#write.csv(all_clones_merged_df,file="C:\\Bar_Ilan_3\\projects\\all_clones_merged_df.csv")
+#Doing the same for "CDR_FWR" regionDefinition:
+parent_db_baseline2<-calcBaseline_L(db=all_clones_merged_df,
+                                    sequenceColumn = "SEQUENCE",
+                                    germlineColumn = "PARENT_SEQUENCE",regionDefinition = "CDR_FWR")
+gc()
+parent_db_baseline2@db$SAME<-"same"
+parent_db_group_baseline2<-groupBaseline_L(baseline_L = parent_db_baseline2, groupBy = "SAME")
 
+#3. plottting all PDFs:
+g11<-plotBaselineDensity(collapsed_db_group_baseline,idColumn = "SAME",sigmaLimits = c(-1,0.2),
+                    title="PDF consensus with region ALL")
+g11<-g11+geom_vline(xintercept = 0,col="blue")+theme(legend.position = "none",
+                                                     strip.text.y = element_text(size = 8, color = "darkgreen",
+                                                                                 angle=0))
+
+g12<-plotBaselineDensity(collapsed_db_group_baseline2,idColumn = "SAME",sigmaLimits = c(-0.2,0.3),
+                    title="PDF consensus with region CDR_FWR")
+g12<-g12+geom_vline(xintercept = 0,col="blue")+theme(legend.position = "none",
+                                                     strip.text.y = element_text(size = 8, color = "darkgreen",
+                                                                                 angle=0))
+
+g21<-plotBaselineDensity(parent_db_group_baseline,idColumn = "SAME",sigmaLimits = c(-1,0.2),
+                    title="PDF parents with region ALL")
+g21<-g21+geom_vline(xintercept = 0,col="blue")+theme(legend.position = "none",
+                                                     strip.text.y = element_text(size = 8, color = "darkgreen",
+                                                                                 angle=0))
+
+g22<-plotBaselineDensity(parent_db_group_baseline2,idColumn = "SAME",sigmaLimits = c(-0.2,0.3),
+                    title="PDF parents with region CDR_FWR")
+g22<-g22+geom_vline(xintercept = 0,col="blue")+theme(legend.position = "none",
+                                                     strip.text.y = element_text(size = 8, color = "darkgreen",
+                                                                                 angle=0))
+ggarrange(g11,g12 ,g21 ,g22, ncol = 2, nrow = 2)
 ```
 
+
+### Data analysis 2: same as Data analysis 1, but only on none-singletone reads.  
+The motivation here is to have a stronger difference between 2 methods bellow, as singletone reads will  
+show (as proven later below) - that singletone reads behave the same in both methods: 
+1. PDFs using consensus clones.  
+2. PDFs using parents sequences.  
+```{r data_analysis_2}
+#1.  Calculating "consensus" sequence through "collapasClones" on all clones, and drawing PDF: 
+#    (Note: cannot use all possible :methods" due to some NA in db)
+collapsed_db_nonest<-collapseClones_L(db=none_singletone_db, 
+                               sequenceColumn = "SEQUENCE", reg_type="ALL",
+                               germlineColumn = "GERMLINE_IMGT",method="mostMutated")
+collapsed_db_baseline_nonest<-calcBaseline_L(db=collapsed_db_nonest,sequenceColumn = "CLONAL_SEQUENCE",
+                                 germlineColumn = "CLONAL_GERMLINE",regionDefinition = "ALL")
+# adding a column with same value - for the groupBaseline pdf below:
+gc()
+collapsed_db_baseline_nonest@db$SAME<-"same"
+collapsed_db_group_baseline_nonest<-groupBaseline_L(baseline_L=collapsed_db_baseline_nonest,groupBy = "SAME")
+
+#Doing the same for "CDR_FWR" regionDefinition:
+collapsed_db2_nonest<-collapseClones_L(db=none_singletone_db, 
+                               sequenceColumn = "SEQUENCE", reg_type="CDR_FWR",
+                               germlineColumn = "GERMLINE_IMGT",method="mostMutated")
+collapsed_db_baseline2_nonest<-calcBaseline_L(db=collapsed_db2_nonest,sequenceColumn = "CLONAL_SEQUENCE",
+                                 germlineColumn = "CLONAL_GERMLINE",regionDefinition = "CDR_FWR")
+# adding a column with same value - for the groupBaseline pdf below:
+gc()
+collapsed_db_baseline2_nonest@db$SAME<-"same"
+collapsed_db_group_baseline2_nonest<-groupBaseline_L(baseline_L=collapsed_db_baseline2_nonest,groupBy = "SAME")
+
+
+#2. Calculating baseline for all reads - when ref sequence is the parent sequence, and not the germline sequence.
+#expanding memory alocation:
+gc()
+memory.limit(size = 15000)
+parent_db_baseline_nonest<-calcBaseline_L(db=none_singletone_db,
+                                    sequenceColumn = "SEQUENCE",
+                                    germlineColumn = "PARENT_SEQUENCE",regionDefinition = "ALL")
+parent_db_baseline_nonest@db$SAME<-"same"
+parent_db_group_baseline_nonest<-groupBaseline_L(baseline_L = parent_db_baseline_nonest, groupBy = "SAME")
+
+#Doing the same for "CDR_FWR" regionDefinition:
+parent_db_baseline2_nonest<-calcBaseline_L(db=none_singletone_db,
+                                    sequenceColumn = "SEQUENCE",
+                                    germlineColumn = "PARENT_SEQUENCE",regionDefinition = "CDR_FWR")
+gc()
+parent_db_baseline2_nonest@db$SAME<-"same"
+parent_db_group_baseline2_nonest<-groupBaseline_L(baseline_L = parent_db_baseline2_nonest, groupBy = "SAME")
+
+#3. plottting all PDFs:
+gn_11<-plotBaselineDensity(collapsed_db_group_baseline_nonest,idColumn = "SAME",sigmaLimits = c(-1,0.2),
+                    title="PDF consensus with region ALL \n data=none singletone clones")
+gn_11<-gn_11+geom_vline(xintercept = 0,col="blue")+theme(legend.position = "none",
+                                                     strip.text.y = element_text(size = 8, color = "darkgreen",
+                                                                                 angle=0))
+
+gn_12<-plotBaselineDensity(collapsed_db_group_baseline2_nonest,idColumn = "SAME",sigmaLimits = c(-0.5,0.2),
+                    title="PDF consensus with region CDR_FWR \n data=none singletone clones")
+gn_12<-gn_12+geom_vline(xintercept = 0,col="blue")+theme(legend.position = "none",
+                                                     strip.text.y = element_text(size = 8, color = "darkgreen",
+                                                                                 angle=0))
+
+gn_21<-plotBaselineDensity(parent_db_group_baseline_nonest,idColumn = "SAME",sigmaLimits = c(-1,0.2),
+                    title="PDF parents with region ALL \n data=none singletone clones")
+gn_21<-gn_21+geom_vline(xintercept = 0,col="blue")+theme(legend.position = "none",
+                                                     strip.text.y = element_text(size = 8, color = "darkgreen",
+                                                                                 angle=0))
+
+gn_22<-plotBaselineDensity(parent_db_group_baseline2_nonest,idColumn = "SAME",sigmaLimits = c(-0.5,0.2),
+                    title="PDF parents with region CDR_FWR \n data=none singletone clones")
+gn_22<-gn_22+geom_vline(xintercept = 0,col="blue")+theme(legend.position = "none",
+                                                     strip.text.y = element_text(size = 8, color = "darkgreen",
+                                                                                 angle=0))
+ggarrange(gn_11,gn_12 ,gn_21 ,gn_22, ncol = 2, nrow = 2)
+```
+
+###Sanity checks:  
+### Sanity check 1:    
+This step is to be used as a sanity check (to check calcBaseline_L and groupBaseline_L functions):  
+Comparing results using region definition of IMGT_V_BY_REGIONS (including CDR1/2 FWR1/2/3) to results using region definition of type "ALL" (including the whole sequence - CDR1/2/3 and FWR1/2/3/4).  
+The PDFs of CDR1/2 and FWR1/2/3 look similar (see bellow plots), but they are not identical. 
+When looking deeper - the conclusion is that they cannot be identical, since the expected mutation in IMGT_V_BY_REGIONS is calculated based on sequence length of 312, while a region definition of type "ALL" is longer than that. So the relative expected mutations for example of FWR1 in "ALL" region will be smaller than the expected mutations for FWR1 in the IMGT_V_BY_REGIONS.  
+But - I did calculate the following:  
+exp_cdr1/(exp_cdr1+exp_cdr2+exp_fwr1+exp_fwr2+exp_fwr3)  in region "ALL" is the same as exp_cdr1 in region IMGT_V_BY_REGIONS. 
+And same for cdr2, fwr1/2/3.
+``` {r sanity_check1}
+
+collapsed_db_IMGT_V<-collapseClones(db=all_clones_merged_df, 
+                               sequenceColumn = "SEQUENCE", regionDefinition =IMGT_V_BY_REGIONS,
+                               germlineColumn = "GERMLINE_IMGT",method="mostMutated")
+collapsed_db_baseline_IMGT_V<-calcBaseline(db=collapsed_db_IMGT_V,sequenceColumn = "CLONAL_SEQUENCE",
+                                 germlineColumn = "CLONAL_GERMLINE",regionDefinition = IMGT_V_BY_REGIONS)
+gc()
+collapsed_db_baseline_IMGT_V@db$SAME<-"same"
+collapsed_db_group_baseline_IMGT_V<-groupBaseline(baseline=collapsed_db_baseline_IMGT_V,groupBy = "SAME")
+
+gc()
+parent_db_baseline_IMGT_V<-calcBaseline(db=all_clones_merged_df,
+                                    sequenceColumn = "SEQUENCE",
+                                    germlineColumn = "PARENT_SEQUENCE",regionDefinition = IMGT_V_BY_REGIONS)
+parent_db_baseline_IMGT_V@db$SAME<-"same"
+parent_db_group_baseline_IMGT_V<-groupBaseline(baseline = parent_db_baseline_IMGT_V, groupBy = "SAME")
+
+
+g13<-plotBaselineDensity(collapsed_db_group_baseline_IMGT_V,idColumn = "SAME",sigmaLimits = c(-1,0.2),
+                    title="PDF consensus with region IMGT_V_BY_REGIONS")
+g13<-g13+geom_vline(xintercept = 0,col="blue")+theme(legend.position = "none",
+                                                     strip.text.y = element_text(size = 8, color = "darkgreen",
+                                                                                 angle=0))
+g23<-plotBaselineDensity(parent_db_group_baseline_IMGT_V,idColumn = "SAME",sigmaLimits = c(-1,0.2),
+                    title="PDF parents with region IMGT_V_BY_REGIONS")
+g23<-g23+geom_vline(xintercept = 0,col="blue")+theme(legend.position = "none",
+                                                     strip.text.y = element_text(size = 8, color = "darkgreen",
+                                                                                 angle=0))
+ggarrange(g11,g13 ,g21 ,g23, ncol = 2, nrow = 2)
+```
+### Sanity check 2:    
+Compare only singletons (expected to get same PDFs in parent vs consensus methods)
+1. PDFs using consensus clones.  
+2. PDFs using parents sequences. 
+Results are that PDFs are the same.  
+Also - comparing different objects from 1 and 2 above - are equal.  
+```{r sanity_check2}
+#1.  Calculating "consensus" sequence through "collapasClones" on all clones, and drawing PDF: 
+#    (Note: cannot use all possible :methods" due to some NA in db)
+collapsed_db_oneread<-collapseClones_L(db=oneread_clones_db_new, 
+                               sequenceColumn = "SEQUENCE", reg_type="ALL",
+                               germlineColumn = "GERMLINE_IMGT",method="mostMutated")
+collapsed_db_baseline_oneread<-calcBaseline_L(db=collapsed_db_oneread,sequenceColumn = "CLONAL_SEQUENCE",
+                                 germlineColumn = "CLONAL_GERMLINE",regionDefinition = "ALL")
+# adding a column with same value - for the groupBaseline pdf below:
+gc()
+collapsed_db_baseline_oneread@db$SAME<-"same"
+collapsed_db_group_baseline_oneread<-groupBaseline_L(baseline_L=collapsed_db_baseline_oneread,groupBy = "SAME")
+
+#Doing the same for "CDR_FWR" regionDefinition:
+collapsed_db2_oneread<-collapseClones_L(db=oneread_clones_db_new, 
+                               sequenceColumn = "SEQUENCE", reg_type="CDR_FWR",
+                               germlineColumn = "GERMLINE_IMGT",method="mostMutated")
+collapsed_db_baseline2_oneread<-calcBaseline_L(db=collapsed_db2_oneread,sequenceColumn = "CLONAL_SEQUENCE",
+                                 germlineColumn = "CLONAL_GERMLINE",regionDefinition = "CDR_FWR")
+# adding a column with same value - for the groupBaseline pdf below:
+gc()
+collapsed_db_baseline2_oneread@db$SAME<-"same"
+collapsed_db_group_baseline2_oneread<-groupBaseline_L(baseline_L=collapsed_db_baseline2_oneread,groupBy = "SAME")
+
+
+#2. Calculating baseline for all reads - when ref sequence is the parent sequence, and not the germline sequence.
+#expanding memory alocation:
+gc()
+parent_db_baseline_oneread<-calcBaseline_L(db=oneread_clones_db_new,
+                                    sequenceColumn = "SEQUENCE",
+                                    germlineColumn = "PARENT_SEQUENCE",regionDefinition = "ALL")
+parent_db_baseline_oneread@db$SAME<-"same"
+parent_db_group_baseline_oneread<-groupBaseline_L(baseline_L = parent_db_baseline_oneread, groupBy = "SAME")
+
+#Doing the same for "CDR_FWR" regionDefinition:
+parent_db_baseline2_oneread<-calcBaseline_L(db=oneread_clones_db_new,
+                                    sequenceColumn = "SEQUENCE",
+                                    germlineColumn = "PARENT_SEQUENCE",regionDefinition = "CDR_FWR")
+gc()
+parent_db_baseline2_oneread@db$SAME<-"same"
+parent_db_group_baseline2_oneread<-groupBaseline_L(baseline_L = parent_db_baseline2_oneread, groupBy = "SAME")
+
+#3. plottting all PDFs:
+g1_11<-plotBaselineDensity(collapsed_db_group_baseline_oneread,idColumn = "SAME",sigmaLimits = c(-1,0.2),
+                    title="PDF consensus region ALL\n size 1 clones")
+g1_11<-g1_11+geom_vline(xintercept = 0,col="blue")+theme(legend.position = "none",
+                                                     strip.text.y = element_text(size = 8, color = "darkgreen",
+                                                                                 angle=0))
+
+g1_12<-plotBaselineDensity(collapsed_db_group_baseline2_oneread,idColumn = "SAME",sigmaLimits = c(-0.2,0.1),
+                    title="PDF consensus region CDR_FWR\n size 1 clones")
+g1_12<-g1_12+geom_vline(xintercept = 0,col="blue")+theme(legend.position = "none",
+                                                     strip.text.y = element_text(size = 8, color = "darkgreen",
+                                                                                 angle=0))
+
+g1_21<-plotBaselineDensity(parent_db_group_baseline_oneread,idColumn = "SAME",sigmaLimits = c(-1,0.2),
+                    title="PDF parents region ALL\n size 1 clones")
+g1_21<-g1_21+geom_vline(xintercept = 0,col="blue")+theme(legend.position = "none",
+                                                     strip.text.y = element_text(size = 8, color = "darkgreen",
+                                                                                 angle=0))
+
+g1_22<-plotBaselineDensity(parent_db_group_baseline2_oneread,idColumn = "SAME",sigmaLimits = c(-0.2,0.1),
+                    title="PDF parents region CDR_FWR\n size 1 clones")
+g1_22<-g1_22+geom_vline(xintercept = 0,col="blue")+theme(legend.position = "none",
+                                                     strip.text.y = element_text(size = 8, color = "darkgreen",
+                                                                                 angle=0))
+ggarrange(g1_11,g1_12 ,g1_21 ,g1_22, ncol = 2, nrow = 2)
+```
 
