@@ -19,6 +19,8 @@ CreateGermlines.createGermlines(db_file=dbfile,references=Germ_files_list,germ_t
 
 # stage 2:
 # The following adds a clone column to the db:
+# The above function may give different clone numbers on 2 different computers, but it is only the clone
+# numbers. The cloning is done in same gorups of reads in each clone.
 DefineClones.defineClones(db_file='C:\\Bar Ilan 3 data - not backed up\\HCV_B\\CI10_rename_p1_p2_germ-pass.tab')
 
 # stage 3:
