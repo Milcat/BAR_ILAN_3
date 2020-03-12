@@ -19,6 +19,7 @@ library(dplyr)
 library(foreach)
 library(doParallel)
 library(ggpubr)
+library(ggplot2)
 rm(list=ls())
 gc()
 ```
@@ -441,8 +442,7 @@ calcBaseline_one_clone<-function(clone_num,db, sequenceColumn = "SEQUENCE_IMGT",
                                  mutationDefinition = NULL,
                                  calcStats = FALSE, 
                                  nproc = 1) {
-  #clone_db<-filter(db,(!!as.name(clone_col))==clone_num)
-  clone_db<-filter(db,clone_col==clone_num)
+  clone_db<-filter(db,(!!as.name(clone_col))==clone_num)
   reg_def<-get_clone_region(clone_num=clone_num, db=db, 
                               seq_col=sequenceColumn,
                               junc_len_col=junc_len_col,
@@ -617,6 +617,8 @@ clones_db<-subset(clones_db,nchar(as.character(SEQUENCE_IMGT))>=312)
 clones_to_build_trees<-make_clones_list(clones_db)
 
 # 4. Loop on all clones in db above:
+#remove from db the SEQUENCE_INPUT column - as all analysis needs to be done on SEQUENCE_IMGT column
+clones_db<-subset(clones_db,select=-c(SEQUENCE_INPUT))
 first_clone<-TRUE
 first_size_1_clone<-TRUE
 #loop_start_time<-Sys.time()
@@ -843,6 +845,145 @@ gn_22<-gn_22+geom_vline(xintercept = 0,col="blue")+theme(legend.position = "none
 ggarrange(gn_11,gn_12 ,gn_21 ,gn_22, ncol = 2, nrow = 2)
 ```
 
+```{r}
+#Ploting Error Bar Charts for above none-singletone:
+collaped_stats_reg_ALL<-collapsed_db_group_baseline_nonest@stats
+collaped_stats_reg_ALL$BASELINE_METHOD<-"Consensus"
+
+collaped_stats_reg_CDR_FWR<-collapsed_db_group_baseline2_nonest@stats
+collaped_stats_reg_CDR_FWR$BASELINE_METHOD<-"Consensus"
+
+parent_stats_reg_ALL<-parent_db_group_baseline_nonest@stats
+parent_stats_reg_ALL$BASELINE_METHOD<-"Parent"
+
+parent_stats_reg_CDR_FWR<-parent_db_group_baseline2_nonest@stats
+parent_stats_reg_CDR_FWR$BASELINE_METHOD<-"Parent"
+
+stats_reg_ALL<-rbind(collaped_stats_reg_ALL,parent_stats_reg_ALL)
+stats_reg_CDR_FWR<-rbind(collaped_stats_reg_CDR_FWR,parent_stats_reg_CDR_FWR)
+
+
+
+base_theme <- theme_bw() + theme(panel.background = element_blank(), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+                                 panel.border = element_rect(color = "black", size = 0.5)) + 
+              theme(strip.background = element_rect(fill = "white",color = "black", size = 0.5)) + theme(axis.title.x = element_blank(),
+                                                                                                         axis.text.x = element_blank(),
+                                                                                                         axis.ticks.x = element_blank()) + 
+              theme(legend.position = "top") + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+
+g_eb_ALL<-ggplot(stats_reg_ALL, aes_string(x = "REGION", y = "BASELINE_SIGMA",ymax = max("BASELINE_SIGMA")))
+g_eb_ALL<-g_eb_ALL+ geom_errorbar(mapping=aes(x=REGION, ymin=BASELINE_CI_LOWER, ymax=BASELINE_CI_UPPER,color=BASELINE_METHOD), position = position_dodge(0.5),width=0.2, size=1) 
+g_eb_ALL<-g_eb_ALL + geom_hline(yintercept = 0, size = 0.5, linetype = 2, color = "black") 
+g_eb_ALL<-g_eb_ALL +geom_point(size=4,aes(color=BASELINE_METHOD),position = position_dodge(0.5))
+g_eb_ALL<-g_eb_ALL+base_theme
+g_eb_ALL<-g_eb_ALL+ggtitle('Baseline results for methods "Consensus" and "Parent"\n  region type "ALL", data HCV CI10 none-singletone,  "local" test')
+g_eb_ALL<-g_eb_ALL +ylab(expression(Sigma))
+g_eb_ALL
+
+g_eb_CDR_FWR<-ggplot(stats_reg_CDR_FWR, aes_string(x = "REGION", y = "BASELINE_SIGMA",ymax = max("BASELINE_SIGMA")))
+g_eb_CDR_FWR<-g_eb_CDR_FWR+ geom_errorbar(mapping=aes(x=REGION, ymin=BASELINE_CI_LOWER, ymax=BASELINE_CI_UPPER,color=BASELINE_METHOD), position = position_dodge(0.5),width=0.2, size=1) 
+g_eb_CDR_FWR<-g_eb_CDR_FWR + geom_hline(yintercept = 0, size = 0.5, linetype = 2, color = "black") 
+g_eb_CDR_FWR<-g_eb_CDR_FWR +geom_point(size=4,aes(color=BASELINE_METHOD),position = position_dodge(0.5))
+g_eb_CDR_FWR<-g_eb_CDR_FWR+base_theme
+g_eb_CDR_FWR<-g_eb_CDR_FWR+ggtitle('Baseline results for methods "Consensus" and "Parent"\n  region type "CDR_FWR", data HCV CI10 none-singletone, "local" test')
+g_eb_CDR_FWR<-g_eb_CDR_FWR +ylab(expression(Sigma)) 
+g_eb_CDR_FWR
+
+```
+#### Data analysis 3:  Same as Data Analysis 1, but on clones with up to 10 mutations: 
+Same as data analysis 1, but filtering to clones with up to 10 mutations on all reads.  
+```{r data_analysis_4}
+#1.  Calculating "consensus" sequence through "collapasClones" on all clones, and drawing PDF: 
+#    (Note: cannot use all possible :methods" due to some NA in db)
+all_clones_merged_df$ORIG_SEQUENCE_ID<-as.character(all_clones_merged_df$ORIG_SEQUENCE_ID)
+collapsed_db<-collapseClones_L(db=all_clones_merged_df, 
+                               sequenceColumn = "SEQUENCE", reg_type="ALL",
+                               germlineColumn = "GERMLINE_IMGT",method="mostMutated")
+collapsed_db_baseline<-calcBaseline_L(db=collapsed_db,sequenceColumn = "CLONAL_SEQUENCE",
+                                 germlineColumn = "CLONAL_GERMLINE",regionDefinition = "ALL")
+collapsed_db_baseline@db<-mutate(collapsed_db_baseline@db,MU_COUNT=MU_COUNT_CDR1_S+MU_COUNT_CDR1_R+MU_COUNT_CDR2_S+MU_COUNT_CDR2_R+MU_COUNT_CDR3_S+MU_COUNT_CDR3_R+MU_COUNT_FWR1_S+MU_COUNT_FWR1_R+MU_COUNT_FWR2_S+MU_COUNT_FWR2_R+MU_COUNT_FWR3_S+MU_COUNT_FWR3_R+MU_COUNT_FWR4_S+MU_COUNT_FWR4_R)
+collapsed_db_baseline@db<-filter(collapsed_db_baseline@db,MU_COUNT<=10)
+collapsed_db_baseline@db$SAME<-"same"
+collapsed_db_group_baseline<-groupBaseline_L(baseline_L=collapsed_db_baseline,groupBy = "SAME")
+
+#Doing the same for "CDR_FWR" regionDefinition:
+collapsed_db2<-collapseClones_L(db=all_clones_merged_df, 
+                               sequenceColumn = "SEQUENCE", reg_type="CDR_FWR",
+                               germlineColumn = "GERMLINE_IMGT",method="mostMutated")
+collapsed_db_baseline2<-calcBaseline_L(db=collapsed_db2,sequenceColumn = "CLONAL_SEQUENCE",
+                                 germlineColumn = "CLONAL_GERMLINE",regionDefinition = "CDR_FWR")
+collapsed_db_baseline2@db<-mutate(collapsed_db_baseline2@db,MU_COUNT=MU_COUNT_CDR_R+MU_COUNT_CDR_S+MU_COUNT_FWR_R+MU_COUNT_FWR_S)
+collapsed_db_baseline2@db<-filter(collapsed_db_baseline2@db,MU_COUNT<=10)
+# adding a column with same value - for the groupBaseline pdf below:
+gc()
+collapsed_db_baseline2@db$SAME<-"same"
+collapsed_db_group_baseline2<-groupBaseline_L(baseline_L=collapsed_db_baseline2,groupBy = "SAME")
+
+
+#2. Calculating baseline for all reads - when ref sequence is the parent sequence, and not the germline sequence.
+#expanding memory alocation:
+gc()
+memory.limit(size = 15000)
+parent_db_baseline<-calcBaseline_L(db=all_clones_merged_df,
+                                    sequenceColumn = "SEQUENCE",
+                                    germlineColumn = "PARENT_SEQUENCE",regionDefinition = "ALL")
+parent_db_baseline@db<-mutate(parent_db_baseline@db,MU_COUNT=MU_COUNT_CDR1_S+MU_COUNT_CDR1_R+MU_COUNT_CDR2_S+MU_COUNT_CDR2_R+MU_COUNT_CDR3_S+MU_COUNT_CDR3_R+MU_COUNT_FWR1_S+MU_COUNT_FWR1_R+MU_COUNT_FWR2_S+MU_COUNT_FWR2_R+MU_COUNT_FWR3_S+MU_COUNT_FWR3_R+MU_COUNT_FWR4_S+MU_COUNT_FWR4_R)
+parent_db_baseline@db<-filter(parent_db_baseline@db,MU_COUNT<=10)
+parent_db_baseline@db$SAME<-"same"
+parent_db_group_baseline<-groupBaseline_L(baseline_L = parent_db_baseline, groupBy = "SAME")
+
+#Doing the same for "CDR_FWR" regionDefinition:
+parent_db_baseline2<-calcBaseline_L(db=all_clones_merged_df,
+                                    sequenceColumn = "SEQUENCE",
+                                    germlineColumn = "PARENT_SEQUENCE",regionDefinition = "CDR_FWR")
+gc()
+parent_db_baseline2@db<-mutate(parent_db_baseline2@db,MU_COUNT=MU_COUNT_CDR_R+MU_COUNT_CDR_S+MU_COUNT_FWR_R+MU_COUNT_FWR_S)
+parent_db_baseline2@db<-filter(parent_db_baseline2@db,MU_COUNT<=10)
+parent_db_baseline2@db$SAME<-"same"
+parent_db_group_baseline2<-groupBaseline_L(baseline_L = parent_db_baseline2, groupBy = "SAME")
+
+
+#Ploting Error Bar Charts for above none-singletone:
+collaped_stats_reg_ALL<-collapsed_db_group_baseline@stats
+collaped_stats_reg_ALL$BASELINE_METHOD<-"Consensus"
+
+collaped_stats_reg_CDR_FWR<-collapsed_db_group_baseline2@stats
+collaped_stats_reg_CDR_FWR$BASELINE_METHOD<-"Consensus"
+
+parent_stats_reg_ALL<-parent_db_group_baseline@stats
+parent_stats_reg_ALL$BASELINE_METHOD<-"Parent"
+
+parent_stats_reg_CDR_FWR<-parent_db_group_baseline2@stats
+parent_stats_reg_CDR_FWR$BASELINE_METHOD<-"Parent"
+
+stats_reg_ALL<-rbind(collaped_stats_reg_ALL,parent_stats_reg_ALL)
+stats_reg_CDR_FWR<-rbind(collaped_stats_reg_CDR_FWR,parent_stats_reg_CDR_FWR)
+
+base_theme <- theme_bw() + theme(panel.background = element_blank(), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+                                 panel.border = element_rect(color = "black", size = 0.5)) + 
+              theme(strip.background = element_rect(fill = "white",color = "black", size = 0.5)) + theme(axis.title.x = element_blank(),
+                                                                                                         axis.text.x = element_blank(),
+                                                                                                         axis.ticks.x = element_blank()) + 
+              theme(legend.position = "top") + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+
+g_eb_ALL<-ggplot(stats_reg_ALL, aes_string(x = "REGION", y = "BASELINE_SIGMA",ymax = max("BASELINE_SIGMA")))
+g_eb_ALL<-g_eb_ALL+ geom_errorbar(mapping=aes(x=REGION, ymin=BASELINE_CI_LOWER, ymax=BASELINE_CI_UPPER,color=BASELINE_METHOD), position = position_dodge(0.5),width=0.2, size=1) 
+g_eb_ALL<-g_eb_ALL + geom_hline(yintercept = 0, size = 0.5, linetype = 2, color = "black") 
+g_eb_ALL<-g_eb_ALL +geom_point(size=4,aes(color=BASELINE_METHOD),position = position_dodge(0.5))
+g_eb_ALL<-g_eb_ALL+base_theme
+g_eb_ALL<-g_eb_ALL+ggtitle('Baseline results for methods "Consensus" and "Parent"\n  region type "ALL", data HCV CI10 \n clones with up to 10 mutations,  "local" test')
+g_eb_ALL<-g_eb_ALL +ylab(expression(Sigma))
+g_eb_ALL
+
+g_eb_CDR_FWR<-ggplot(stats_reg_CDR_FWR, aes_string(x = "REGION", y = "BASELINE_SIGMA",ymax = max("BASELINE_SIGMA")))
+g_eb_CDR_FWR<-g_eb_CDR_FWR+ geom_errorbar(mapping=aes(x=REGION, ymin=BASELINE_CI_LOWER, ymax=BASELINE_CI_UPPER,color=BASELINE_METHOD), position = position_dodge(0.5),width=0.2, size=1) 
+g_eb_CDR_FWR<-g_eb_CDR_FWR + geom_hline(yintercept = 0, size = 0.5, linetype = 2, color = "black") 
+g_eb_CDR_FWR<-g_eb_CDR_FWR +geom_point(size=4,aes(color=BASELINE_METHOD),position = position_dodge(0.5))
+g_eb_CDR_FWR<-g_eb_CDR_FWR+base_theme
+g_eb_CDR_FWR<-g_eb_CDR_FWR+ggtitle('Baseline results for methods "Consensus" and "Parent"\n  region type "CDR_FWR", data HCV CI10 \n clones with up to 10 mutations, "local" test')
+g_eb_CDR_FWR<-g_eb_CDR_FWR +ylab(expression(Sigma)) 
+g_eb_CDR_FWR
+```
 ###Sanity checks:  
 ### Sanity check 1:    
 This step is to be used as a sanity check (to check calcBaseline_L and groupBaseline_L functions):  
@@ -958,3 +1099,50 @@ g1_22<-g1_22+geom_vline(xintercept = 0,col="blue")+theme(legend.position = "none
 ggarrange(g1_11,g1_12 ,g1_21 ,g1_22, ncol = 2, nrow = 2)
 ```
 
+```{r}
+#Ploting Error Bar Charts:
+collaped_stats_reg_ALL<-collapsed_db_group_baseline@stats
+collaped_stats_reg_ALL$BASELINE_METHOD<-"Consensus"
+
+collaped_stats_reg_CDR_FWR<-collapsed_db_group_baseline2@stats
+collaped_stats_reg_CDR_FWR$BASELINE_METHOD<-"Consensus"
+
+parent_stats_reg_ALL<-parent_db_group_baseline@stats
+parent_stats_reg_ALL$BASELINE_METHOD<-"Parent"
+
+parent_stats_reg_CDR_FWR<-parent_db_group_baseline2@stats
+parent_stats_reg_CDR_FWR$BASELINE_METHOD<-"Parent"
+
+stats_reg_ALL<-rbind(collaped_stats_reg_ALL,parent_stats_reg_ALL)
+stats_reg_CDR_FWR<-rbind(collaped_stats_reg_CDR_FWR,parent_stats_reg_CDR_FWR)
+
+
+
+base_theme <- theme_bw() + theme(panel.background = element_blank(), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+                                 panel.border = element_rect(color = "black", size = 0.5)) + 
+              theme(strip.background = element_rect(fill = "white",color = "black", size = 0.5)) + theme(axis.title.x = element_blank(),
+                                                                                                         axis.text.x = element_blank(),
+                                                                                                         axis.ticks.x = element_blank()) + 
+              theme(legend.position = "top") + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+
+g_eb_ALL<-ggplot(stats_reg_ALL, aes_string(x = "REGION", y = "BASELINE_SIGMA",ymax = max("BASELINE_SIGMA")))
+g_eb_ALL<-g_eb_ALL+ geom_errorbar(mapping=aes(x=REGION, ymin=BASELINE_CI_LOWER, ymax=BASELINE_CI_UPPER,color=BASELINE_METHOD), position = position_dodge(0.5),width=0.2, size=1) 
+g_eb_ALL<-g_eb_ALL + geom_hline(yintercept = 0, size = 0.5, linetype = 2, color = "black") 
+g_eb_ALL<-g_eb_ALL +geom_point(size=4,aes(color=BASELINE_METHOD),position = position_dodge(0.5))
+g_eb_ALL<-g_eb_ALL+base_theme
+g_eb_ALL<-g_eb_ALL+ggtitle('Baseline results for methods "Consensus" and "Parent"\n         region type "ALL", data HCV CI10,  "local" test')
+g_eb_ALL<-g_eb_ALL +ylab(expression(Sigma))
+g_eb_ALL
+
+g_eb_CDR_FWR<-ggplot(stats_reg_CDR_FWR, aes_string(x = "REGION", y = "BASELINE_SIGMA",ymax = max("BASELINE_SIGMA")))
+g_eb_CDR_FWR<-g_eb_CDR_FWR+ geom_errorbar(mapping=aes(x=REGION, ymin=BASELINE_CI_LOWER, ymax=BASELINE_CI_UPPER,color=BASELINE_METHOD), position = position_dodge(0.5),width=0.2, size=1) 
+g_eb_CDR_FWR<-g_eb_CDR_FWR + geom_hline(yintercept = 0, size = 0.5, linetype = 2, color = "black") 
+g_eb_CDR_FWR<-g_eb_CDR_FWR +geom_point(size=4,aes(color=BASELINE_METHOD),position = position_dodge(0.5))
+g_eb_CDR_FWR<-g_eb_CDR_FWR+base_theme
+g_eb_CDR_FWR<-g_eb_CDR_FWR+ggtitle('Baseline results for methods "Consensus" and "Parent"\n  region type "CDR_FWR", data HCV SC10, "local" test')
+g_eb_CDR_FWR<-g_eb_CDR_FWR +ylab(expression(Sigma)) 
+g_eb_CDR_FWR
+
+
+
+```
